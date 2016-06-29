@@ -23,8 +23,7 @@ from ryu.ofproto.ofproto_v1_0_parser import OFPMatch
 from ryu.lib import dpid as dpid_lib
 
 
-VALID = [set(['version', 'src_dpid', 'src_port']),
-         set(['version', 'src_dpid', 'src_port', 'hwaddr']),
+VALID = [set(['version', 'src_dpid', 'src_port', 'hwaddr']),
          set(['version', 'src_dpid', 'src_port', 'hwaddr', 'match',
               'dst_dpid', 'dst_port'])]
 
@@ -197,7 +196,7 @@ class IntentController(ControllerBase):
             rule = self.intent_app.add_rule(body)
             headers = {'Location': '/intent/rules/%s' % rule}
 
-            return Response(status=204, headers=headers)
+            return Response(status=201, headers=headers)
 
         except KeyError:
             return Response(status=404)
@@ -224,7 +223,7 @@ class IntentController(ControllerBase):
             rule = self.intent_app.add_rule(body, rule_id)
             headers = {'Location': '/intent/rules/%s' % rule}
 
-            return Response(status=204, headers=headers)
+            return Response(status=201, headers=headers)
 
         except KeyError:
             return Response(status=404)
