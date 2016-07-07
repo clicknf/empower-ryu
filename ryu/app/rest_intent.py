@@ -25,6 +25,8 @@ from ryu.lib import dpid as dpid_lib
 
 VALID = [set(['version', 'src_dpid', 'src_port', 'hwaddr']),
          set(['version', 'src_dpid', 'src_port', 'hwaddr', 'match',
+              'dst_dpid', 'dst_port']),
+         set(['version', 'src_dpid', 'src_port', 'match',
               'dst_dpid', 'dst_port'])]
 
 
