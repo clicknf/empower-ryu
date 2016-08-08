@@ -23,11 +23,9 @@ from ryu.ofproto.ofproto_v1_0_parser import OFPMatch
 from ryu.lib import dpid as dpid_lib
 
 
-VALID = [set(['version', 'src_dpid', 'src_port', 'hwaddr']),
-         set(['version', 'src_dpid', 'src_port', 'hwaddr', 'match',
-              'dst_dpid', 'dst_port']),
-         set(['version', 'src_dpid', 'src_port', 'match',
-              'dst_dpid', 'dst_port'])]
+VALID = [set(['version', 'ttp_dpid', 'ttp_port', 'match']),
+         set(['version', 'stp_dpid', 'stp_dpid', 'match',
+              'ttp_dpid', 'ttp_port'])]
 
 
 def empower_to_dpid(mac):
@@ -53,40 +51,28 @@ def dpid_to_empower(dpid):
 
 class IntentRule(object):
 
-    def __init__(self, rule, rule_id=None):
+    def __init__(self, rule):
 
-        if rule_id:
-            self.uuid = rule_id
-        else:
-            self.uuid = uuid.uuid4()
-
-        self.src_dpid = empower_to_dpid(rule['src_dpid'])
-        self.src_port = int(rule['src_port'])
-        self.hwaddr = None
-        self.dst_dpid = None
-        self.dst_port = None
-        self.match = None
+        self.uuid = uuid.uuid4()
+        self.ttp_dpid = empower_to_dpid(rule['ttp_dpid'])
+        self.ttp_port = int(rule['ttp_port'])
+        self.match = OFPMatch(**rule['match'])
+        self.stp_dpid = None
+        self.stp_port = None
         self.flow_mods = []
 
-        if 'hwaddr' in rule:
-
-            self.hwaddr = rule['hwaddr']
-
-        if 'dst_dpid' in rule:
-
-            self.dst_dpid = empower_to_dpid(rule['dst_dpid'])
-            self.dst_port = int(rule['dst_port'])
-            self.match = OFPMatch(**rule['match'])
+        if 'stp_dpid' in rule:
+            self.stp_dpid = empower_to_dpid(rule['stp_dpid'])
+            self.stp_port = int(rule['stp_port'])
 
     def to_jsondict(self):
         """Return JSON representation of this object."""
 
-        out = {'hwaddr': self.hwaddr,
-               'src_dpid': dpid_to_empower(self.src_dpid),
-               'src_port': self.src_port,
+        out = {'ttp_dpid': dpid_to_empower(self.ttp_dpid),
+               'ttp_port': self.ttp_port,
                'uuid': self.uuid,
-               'dst_dpid': dpid_to_empower(self.dst_dpid),
-               'dst_port': self.dst_port,
+               'stp_dpid': dpid_to_empower(self.stp_dpid),
+               'stp_port': self.stp_port,
                'match': self.match}
 
         return out
@@ -120,18 +106,6 @@ class IntentController(ControllerBase):
     def __init__(self, req, link, data, **config):
         super(IntentController, self).__init__(req, link, data, **config)
         self.intent_app = data['intent_app']
-
-    @route('intent', '/intent/hwaddrs', methods=['GET'])
-    def get_hwaddrs(self, req, **kwargs):
-
-        body = json.dumps(self.intent_app.hwaddrs, cls=IntentEncoder)
-        return Response(content_type='application/json', body=body)
-
-    @route('intent', '/intent/vnf_ports', methods=['GET'])
-    def get_vnf_ports(self, req, **kwargs):
-
-        body = json.dumps(self.intent_app.vnf_ports, cls=IntentEncoder)
-        return Response(content_type='application/json', body=body)
 
     @route('intent', '/intent/rules', methods=['GET'])
     def get_rules(self, req, **kwargs):
@@ -195,35 +169,9 @@ class IntentController(ControllerBase):
             if keys not in VALID:
                 return Response(status=400)
 
-            rule = self.intent_app.add_rule(body)
-            headers = {'Location': '/intent/rules/%s' % rule}
-
-            return Response(status=201, headers=headers)
-
-        except KeyError:
-            return Response(status=404)
-
-        except ValueError:
-            return Response(status=400)
-
-    @route('intent', '/intent/rules/{uuid}', methods=['POST'])
-    def add_rule_by_uuid(self, req, **kwargs):
-
-        try:
-
-            rule_id = uuid.UUID(kwargs['uuid'])
-
-            body = json.loads(req.body)
-            keys = set(body.keys())
-
-            if keys not in VALID:
-                return Response(status=400)
-
-            if rule_id in self.intent_app.rules:
-                return Response(status=409)
-
-            rule = self.intent_app.add_rule(body, rule_id)
-            headers = {'Location': '/intent/rules/%s' % rule}
+            new_rule = IntentRule(body)
+            self.intent_app.add_rule(new_rule)
+            headers = {'Location': '/intent/rules/%s' % new_rule.uuid}
 
             return Response(status=201, headers=headers)
 
