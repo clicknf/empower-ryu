@@ -13,10 +13,11 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-import uuid
 import json
 
 from webob import Response
+from uuid import UUID
+from uuid import uuid4
 
 from ryu.app.wsgi import ControllerBase, route
 from ryu.ofproto.ofproto_v1_0_parser import OFPMatch
@@ -52,12 +53,12 @@ def dpid_to_empower(dpid):
 
 class IntentRule(object):
 
-    def __init__(self, rule):
+    def __init__(self, uuid, rule):
 
-        self.uuid = uuid.uuid4()
+        self.uuid = uuid
         self.ttp_dpid = empower_to_dpid(rule['ttp_dpid'])
         self.ttp_port = int(rule['ttp_port'])
-        self.match = OFPMatch(**rule['match'])
+        self.match = rule['match']
         self.stp_dpid = None
         self.stp_port = None
         self.flow_mods = []
@@ -125,8 +126,8 @@ class IntentController(ControllerBase):
 
         try:
 
-            rule_id = uuid.UUID(kwargs['uuid'])
-            body = json.dumps(self.intent_app.rules[rule_id],
+            uuid = UUID(kwargs['uuid'])
+            body = json.dumps(self.intent_app.rules[uuid],
                               cls=IntentEncoder)
             return Response(content_type='application/json', body=body)
 
@@ -142,7 +143,7 @@ class IntentController(ControllerBase):
         try:
 
             self.intent_app.remove_rule(None)
-            return Response(status=202)
+            return Response(status=204)
 
         except KeyError:
             return Response(status=404)
@@ -155,9 +156,36 @@ class IntentController(ControllerBase):
 
         try:
 
-            rule = uuid.UUID(kwargs['uuid'])
-            self.intent_app.remove_rule(rule)
-            return Response(status=202)
+            uuid = UUID(kwargs['uuid'])
+            self.intent_app.remove_rule(uuid)
+            return Response(status=204)
+
+        except KeyError:
+            return Response(status=404)
+
+        except ValueError:
+            return Response(status=400)
+
+    @route('intent', '/intent/rules/{uuid}', methods=['PUT'])
+    def update_rule(self, req, **kwargs):
+
+        try:
+
+            body = json.loads(req.body)
+            keys = set(body.keys())
+
+            if keys not in VALID:
+                return Response(status=400)
+
+            uuid = UUID(kwargs['uuid'])
+
+            if uuid not in self.intent_app.rules:
+                raise KeyError("Unable to find %s", uuid)
+
+            rule = IntentRule(uuid, body)
+            self.intent_app.update_rule(uuid, rule)
+
+            return Response(status=204)
 
         except KeyError:
             return Response(status=404)
@@ -176,9 +204,9 @@ class IntentController(ControllerBase):
             if keys not in VALID:
                 return Response(status=400)
 
-            new_rule = IntentRule(body)
-            self.intent_app.add_rule(new_rule)
-            headers = {'Location': '/intent/rules/%s' % new_rule.uuid}
+            rule = IntentRule(uuid4(), body)
+            self.intent_app.add_rule(rule)
+            headers = {'Location': '/intent/rules/%s' % rule.uuid}
 
             return Response(status=201, headers=headers)
 

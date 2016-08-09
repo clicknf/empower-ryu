@@ -24,6 +24,10 @@ from ryu.lib.packet import ether_types
 from ryu.app.rest_intent import IntentController
 from ryu.topology.event import EventSwitchEnter
 from ryu.topology.api import get_switch, get_link
+from ryu.ofproto.ofproto_v1_0_parser import OFPMatch
+
+OFP_LW_PRIORITY = 100
+OFP_RULE_PRIORITY = 200
 
 
 def dijkstra(vertices, edges, source):
@@ -72,34 +76,9 @@ class Intent(app_manager.RyuApp):
 
         self.mac_to_port = {}
         self.rules = {}
-        self.flow_mods_lvnf = []
 
         wsgi = kwargs['wsgi']
         wsgi.register(IntentController, {'intent_app': self})
-
-    @property
-    def hwaddrs(self):
-        """Get the list of hwaddres."""
-
-        hwaddrs = set()
-
-        for rule in self.rules.values():
-            hwaddrs.add(rule.hwaddr)
-
-        return hwaddrs
-
-    @property
-    def vnf_ports(self):
-        """Get the list of vnf ports."""
-
-        vnf_ports = set()
-
-        for rule in self.rules.values():
-            vnf_ports.add((rule.src_dpid, rule.src_port))
-            if rule.dst_dpid:
-                vnf_ports.add((rule.dst_dpid, rule.dst_port))
-
-        return vnf_ports
 
     def _compute_spanning_tree(self, ttp_dpid):
         """Compute spanning tree rooted on ttp_dpid"""
@@ -119,6 +98,12 @@ class Intent(app_manager.RyuApp):
 
         return (dist, prev)
 
+    def update_rule(self, uuid, rule):
+        """Update VNF Link."""
+
+        self.remove_rule(uuid)
+        self.add_rule(rule)
+
     def add_rule(self, rule):
         """Add VNF link."""
 
@@ -137,33 +122,45 @@ class Intent(app_manager.RyuApp):
             ofproto = datapath.ofproto
             actions = [parser.OFPActionOutput(port)]
 
-            mod = datapath.ofproto_parser.OFPFlowMod(
-                datapath=datapath, match=rule.match, cookie=0,
-                command=ofproto.OFPFC_ADD,
-                priority=200, actions=actions)
+            for in_port in datapath.ports:
 
-            rule.flow_mods.append(mod)
+                if in_port == port:
+                    continue
 
-            datapath.send_msg(mod)
+                if in_port == 65534:
+                    continue
+
+                rule.match['in_port'] = in_port
+                match = OFPMatch(**rule.match)
+                del rule.match['in_port']
+
+                mod = datapath.ofproto_parser.OFPFlowMod(
+                    datapath=datapath, match=match, cookie=0,
+                    command=ofproto.OFPFC_ADD,
+                    priority=200, actions=actions)
+
+                rule.flow_mods.append(mod)
+
+                datapath.send_msg(mod)
 
         self.rules[rule.uuid] = rule
 
-    def remove_rule(self, rule_id=None):
+    def remove_rule(self, uuid=None):
         """Remove VNF link."""
 
-        if rule_id:
-            self._remove_reverse_path(rule_id)
-            del self.rules[rule_id]
+        if uuid:
+            self._remove_reverse_path(uuid)
+            del self.rules[uuid]
             return
 
-        for rule_id in self.rules.keys():
-            self._remove_reverse_path(rule_id)
-            del self.rules[rule_id]
+        for uuid in list(self.rules):
+            self._remove_reverse_path(uuid)
+            del self.rules[uuid]
 
-    def _remove_reverse_path(self, rule_id):
+    def _remove_reverse_path(self, uuid):
         """Remove deployed rules."""
 
-        rule = self.rules[rule_id]
+        rule = self.rules[uuid]
 
         for mod in rule.flow_mods:
 
@@ -174,7 +171,7 @@ class Intent(app_manager.RyuApp):
             mod = datapath.ofproto_parser.OFPFlowMod(
                 datapath=datapath, match=match, cookie=0,
                 command=ofproto.OFPFC_DELETE_STRICT,
-                priority=200)
+                priority=OFP_RULE_PRIORITY)
 
             datapath.send_msg(mod)
 
@@ -189,7 +186,7 @@ class Intent(app_manager.RyuApp):
         mod = datapath.ofproto_parser.OFPFlowMod(
             datapath=datapath, match=match, cookie=0,
             command=ofproto.OFPFC_ADD, idle_timeout=0, hard_timeout=0,
-            priority=ofproto.OFP_DEFAULT_PRIORITY,
+            priority=OFP_LW_PRIORITY,
             flags=ofproto.OFPFF_SEND_FLOW_REM, actions=actions)
 
         datapath.send_msg(mod)
