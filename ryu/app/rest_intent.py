@@ -77,7 +77,7 @@ class IntentRule(object):
                'match': self.match,
                'flow_mods': self.flow_mods}
 
-        return out
+        return {'IntentRule': out}
 
 
 class IterEncoder(json.JSONEncoder):
@@ -97,11 +97,14 @@ class IntentEncoder(IterEncoder):
         if isinstance(obj, uuid.UUID):
             return str(obj)
         if isinstance(obj, OFPMatch):
-            return [obj.to_jsondict()]
+            ret = obj.to_jsondict()
+            return ret['OFPMatch']
         if isinstance(obj, OFPFlowMod):
-            return [obj.to_jsondict()]
+            ret = obj.to_jsondict()
+            return ret['OFPFlowMod']
         if isinstance(obj, IntentRule):
-            return [obj.to_jsondict()]
+            ret = obj.to_jsondict()
+            return ret['IntentRule']
         return super(IntentEncoder, self).default(obj)
 
 
