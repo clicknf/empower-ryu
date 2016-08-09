@@ -98,14 +98,8 @@ class Intent(app_manager.RyuApp):
 
         return (dist, prev)
 
-    def update_rule(self, uuid, rule):
-        """Update VNF Link."""
-
-        self.remove_rule(uuid)
-        self.add_rule(rule)
-
-    def add_rule(self, rule):
-        """Add VNF link."""
+    def _compile_rule(self, rule):
+        """Compile rule."""
 
         _, preds = self._compute_spanning_tree(rule.ttp_dpid)
 
@@ -141,7 +135,20 @@ class Intent(app_manager.RyuApp):
 
                 rule.flow_mods.append(mod)
 
-                datapath.send_msg(mod)
+    def update_rule(self, uuid, rule):
+        """Update VNF Link."""
+
+        self.remove_rule(uuid)
+        self.add_rule(rule)
+
+    def add_rule(self, rule):
+        """Add VNF link."""
+
+        self._compute_rule(rule)
+
+        for flow_mod in rule.flow_mods:
+            datapath = flow_mod.datapath
+            datapath.send_msg(flow_mod)
 
         self.rules[rule.uuid] = rule
 
