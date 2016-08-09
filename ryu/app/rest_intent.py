@@ -20,6 +20,7 @@ from webob import Response
 
 from ryu.app.wsgi import ControllerBase, route
 from ryu.ofproto.ofproto_v1_0_parser import OFPMatch
+from ryu.ofproto.ofproto_v1_0_parser import OFPFlowMod
 from ryu.lib import dpid as dpid_lib
 
 
@@ -73,7 +74,8 @@ class IntentRule(object):
                'uuid': self.uuid,
                'stp_dpid': dpid_to_empower(self.stp_dpid),
                'stp_port': self.stp_port,
-               'match': self.match}
+               'match': self.match,
+               'flow_mods': self.flow_mods}
 
         return out
 
@@ -95,6 +97,8 @@ class IntentEncoder(IterEncoder):
         if isinstance(obj, uuid.UUID):
             return str(obj)
         if isinstance(obj, OFPMatch):
+            return [obj.to_jsondict()]
+        if isinstance(obj, OFPFlowMod):
             return [obj.to_jsondict()]
         if isinstance(obj, IntentRule):
             return [obj.to_jsondict()]
