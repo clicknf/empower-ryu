@@ -15,9 +15,9 @@
 
 import json
 
-from webob import Response
 from uuid import UUID
 from uuid import uuid4
+from webob import Response
 
 from ryu.app.wsgi import ControllerBase, route
 from ryu.ofproto.ofproto_v1_0_parser import OFPMatch
@@ -26,7 +26,7 @@ from ryu.lib import dpid as dpid_lib
 
 
 VALID = [set(['version', 'ttp_dpid', 'ttp_port', 'match']),
-         set(['version', 'stp_dpid', 'stp_dpid', 'match',
+         set(['version', 'stp_dpid', 'stp_port', 'match',
               'ttp_dpid', 'ttp_port'])]
 
 
@@ -95,7 +95,7 @@ class IntentEncoder(IterEncoder):
     """Handle the representation of the EmPOWER datatypes in JSON format."""
 
     def default(self, obj):
-        if isinstance(obj, uuid.UUID):
+        if isinstance(obj, UUID):
             return str(obj)
         if isinstance(obj, OFPMatch):
             ret = obj.to_jsondict()

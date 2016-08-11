@@ -144,7 +144,7 @@ class Intent(app_manager.RyuApp):
     def add_rule(self, rule):
         """Add VNF link."""
 
-        self._compute_rule(rule)
+        self._compile_rule(rule)
 
         for flow_mod in rule.flow_mods:
             datapath = flow_mod.datapath
