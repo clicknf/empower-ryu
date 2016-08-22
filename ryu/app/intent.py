@@ -219,6 +219,10 @@ class Intent(app_manager.RyuApp):
         dst = eth.dst
         src = eth.src
 
+        # Ignore packets with multicast ethernet destination address
+        if int(dst.split(':')[0], 16) & 1:
+            return
+
         dpid = datapath.id
         self.mac_to_port.setdefault(dpid, {})
 
