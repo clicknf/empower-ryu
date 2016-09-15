@@ -66,7 +66,7 @@ class IntentRule(object):
         if 'stp_dpid' in rule:
             self.stp_dpid = empower_to_dpid(rule['stp_dpid'])
             self.stp_port = int(rule['stp_port'])
-
+            
     def to_jsondict(self):
         """Return JSON representation of this object."""
 
@@ -178,13 +178,14 @@ class IntentController(ControllerBase):
                 return Response(status=400)
 
             uuid = UUID(kwargs['uuid'])
-
             if uuid not in self.intent_app.rules:
+                print("-------------------------Print inside intent_app.rules")
+
                 raise KeyError("Unable to find %s", uuid)
+            print("-------------------------Print after intent_app.rules")
 
             rule = IntentRule(uuid, body)
             self.intent_app.update_rule(uuid, rule)
-
             return Response(status=204)
 
         except KeyError:
@@ -205,6 +206,7 @@ class IntentController(ControllerBase):
                 return Response(status=400)
 
             rule = IntentRule(uuid4(), body)
+
             self.intent_app.add_rule(rule)
             headers = {'Location': '/intent/rules/%s' % rule.uuid}
 

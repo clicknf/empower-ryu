@@ -25,10 +25,11 @@ from ryu.app.rest_intent import IntentController
 from ryu.topology.event import EventSwitchEnter
 from ryu.topology.api import get_switch, get_link
 from ryu.ofproto.ofproto_v1_0_parser import OFPMatch
+from collections import OrderedDict
 
 OFP_LW_PRIORITY = 100
 OFP_RULE_PRIORITY = 200
-
+BASE_HEX = 16
 
 def dijkstra(vertices, edges, source):
     """Compute minimum spanning tree."""
@@ -76,6 +77,7 @@ class Intent(app_manager.RyuApp):
 
         self.mac_to_port = {}
         self.rules = {}
+        self.lvnf_info = OrderedDict()
 
         wsgi = kwargs['wsgi']
         wsgi.register(IntentController, {'intent_app': self})
@@ -135,6 +137,71 @@ class Intent(app_manager.RyuApp):
 
                 rule.flow_mods.append(mod)
 
+    def _compile_rule_vlan(self, rule):
+        """Compile rule."""
+
+        _, preds = self._compute_spanning_tree(rule.ttp_dpid)
+
+        for pred in preds:
+
+            if not preds[pred]:
+                datapath = get_switch(self, rule.ttp_dpid)[0].dp
+                port = rule.ttp_port
+
+            else:
+                datapath = get_switch(self, pred)[0].dp
+                port = preds[pred][1]
+
+            parser = datapath.ofproto_parser
+            actions = [parser.OFPActionVlanVid(rule.match['dl_vlan'])]
+            actions.append(parser.OFPActionOutput(port))
+
+            for in_port in datapath.ports:
+
+                if in_port == port:
+                    continue
+
+                if in_port == 65534:
+                    continue
+
+                if pred == rule.stp_dpid and in_port == rule.stp_port:
+                    match = OFPMatch(in_port=in_port, dl_src=rule.match['dl_src'])
+                    self.update_flow_mod(datapath, rule, match, actions)
+                    continue
+
+                elif pred == rule.ttp_dpid:
+
+                    if len(self.lvnf_info) == 1:
+                        if rule.stp_dpid != None:
+                            rule.match['in_port'] = in_port
+                            match = OFPMatch(**rule.match)
+                            del rule.match['in_port']
+                        else:
+                            match =  OFPMatch(in_port=in_port, dl_src=rule.match['dl_src'])
+
+                    else:
+                        #prev = len(self.lvnf_info) - 2
+                        match = OFPMatch(in_port=self.lvnf_info.values()[0]['ttp_port'],
+                                         dl_src=rule.match['dl_src'], dl_vlan=self.lvnf_info.values()[0]['dl_vlan'],
+                                         dl_type=rule.match['dl_type'], nw_proto=rule.match['nw_proto'])
+
+                    self.update_flow_mod(datapath, rule, match, actions)
+                    continue
+
+                else:
+                    match = OFPMatch(dl_src=rule.match['dl_src'], dl_vlan=rule.match['dl_vlan'])
+                    self.update_flow_mod(datapath, rule, match, actions)
+
+    def update_flow_mod(self, datapath, rule, match, actions):
+
+        ofproto = datapath.ofproto
+        mod = datapath.ofproto_parser.OFPFlowMod(
+            datapath=datapath, match=match, cookie=0,
+            command=ofproto.OFPFC_ADD,
+            priority=200, actions=actions)
+
+        rule.flow_mods.append(mod)
+
     def update_rule(self, uuid, rule):
         """Update VNF Link."""
 
@@ -144,7 +211,13 @@ class Intent(app_manager.RyuApp):
     def add_rule(self, rule):
         """Add VNF link."""
 
-        self._compile_rule(rule)
+        try:
+            rule.match['dl_vlan']
+        except:
+            self._compile_rule(rule)
+        else:
+            self.lvnf_info[rule.uuid] = {'dl_vlan': rule.match['dl_vlan'], 'ttp_port': rule.ttp_port}
+            self._compile_rule_vlan(rule)
 
         for flow_mod in rule.flow_mods:
             datapath = flow_mod.datapath
@@ -157,12 +230,15 @@ class Intent(app_manager.RyuApp):
 
         if uuid:
             self._remove_reverse_path(uuid)
+            del self.lvnf_info[uuid]
             del self.rules[uuid]
+
             return
 
         for uuid in list(self.rules):
             self._remove_reverse_path(uuid)
             del self.rules[uuid]
+            del self.lvnf_info[uuid]
 
     def _remove_reverse_path(self, uuid):
         """Remove deployed rules."""
@@ -222,6 +298,11 @@ class Intent(app_manager.RyuApp):
         dpid = datapath.id
         self.mac_to_port.setdefault(dpid, {})
 
+        # Ignore packets with multicast ethernet destination address
+
+        if int(dst.split(':')[0], BASE_HEX) & 1:
+            return
+
         if dst != "ff:ff:ff:ff:ff:ff":
             self.logger.info("Packet in %s %s %s %s", dpid, src, dst,
                              msg.in_port)
@@ -236,7 +317,7 @@ class Intent(app_manager.RyuApp):
                 self.logger.info("Dst %s not found in Mac To Port", dst)
             out_port = ofproto.OFPP_FLOOD
 
-        actions = [datapath.ofproto_parser.OFPActionOutput(out_port)]
+        actions = [datapath.ofproto_parser.OFPActionStripVlan(),  datapath.ofproto_parser.OFPActionOutput(out_port)]
 
         # install a flow to avoid packet_in next time
         if out_port != ofproto.OFPP_FLOOD:
