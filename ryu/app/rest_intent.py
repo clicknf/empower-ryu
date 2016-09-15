@@ -179,10 +179,8 @@ class IntentController(ControllerBase):
 
             uuid = UUID(kwargs['uuid'])
             if uuid not in self.intent_app.rules:
-                print("-------------------------Print inside intent_app.rules")
 
                 raise KeyError("Unable to find %s", uuid)
-            print("-------------------------Print after intent_app.rules")
 
             rule = IntentRule(uuid, body)
             self.intent_app.update_rule(uuid, rule)
