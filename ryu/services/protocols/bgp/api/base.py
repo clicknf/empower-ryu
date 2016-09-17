@@ -43,6 +43,14 @@ VPN_LABEL = 'label'
 API_SYM = 'name'
 ORIGIN_RD = 'origin_rd'
 ROUTE_FAMILY = 'route_family'
+EVPN_ROUTE_TYPE = 'route_type'
+EVPN_ESI = 'esi'
+EVPN_ETHERNET_TAG_ID = 'ethernet_tag_id'
+MAC_ADDR = 'mac_addr'
+IP_ADDR = 'ip_addr'
+MPLS_LABELS = 'mpls_labels'
+TUNNEL_TYPE = 'tunnel_type'
+EVPN_VNI = 'vni'
 
 # API call registry
 _CALL_REGISTRY = {}
@@ -146,6 +154,8 @@ class RegisterWithArgChecks(object):
             2) no extra/un-known arguments are passed
             3) checks if validator for required arguments is available
             4) validates required arguments
+            5) if validator for optional arguments is registered,
+               validates optional arguments.
             Raises exception if no validator can be found for required args.
             """
             # Check if we are missing arguments.
@@ -176,8 +186,8 @@ class RegisterWithArgChecks(object):
                 # Validate required value.
                 validator = get_validator(req_arg)
                 if not validator:
-                    raise ValueError('No validator registered for function %s'
-                                     ' and arg. %s' % (func, req_arg))
+                    raise ValueError('No validator registered for function=%s'
+                                     ' and arg=%s' % (func, req_arg))
                 validator(req_value)
                 req_values.append(req_value)
 
@@ -185,6 +195,12 @@ class RegisterWithArgChecks(object):
             opt_items = {}
             for opt_arg, opt_value in kwargs.items():
                 if opt_arg in self._opt_args:
+                    # Validate optional value.
+                    # Note: If no validator registered for optional value,
+                    # skips validation.
+                    validator = get_validator(opt_arg)
+                    if validator:
+                        validator(opt_value)
                     opt_items[opt_arg] = opt_value
 
             # Call actual function

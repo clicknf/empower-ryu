@@ -37,9 +37,13 @@ from ryu.lib.packet import safi as subaddr_family
 from ryu.lib.packet import packet_base
 from ryu.lib.packet import stream_parser
 from ryu.lib import addrconv
+from ryu.lib import type_desc
 from ryu.lib.pack_utils import msg_pack_into
+from ryu.utils import binary_str
 
 reduce = six.moves.reduce
+
+TCP_SERVER_PORT = 179
 
 BGP_MSG_OPEN = 1
 BGP_MSG_UPDATE = 2
@@ -178,9 +182,7 @@ class _Value(object):
         args = []
         for f in self._VALUE_FIELDS:
             args.append(getattr(self, f))
-        buf = bytearray()
-        msg_pack_into(self._VALUE_PACK_STR, buf, 0, *args)
-        return buf
+        return struct.pack(self._VALUE_PACK_STR, *args)
 
 
 class _TypeDisp(object):
@@ -595,6 +597,7 @@ RF_IPv4_VPN = RouteFamily(addr_family.IP, subaddr_family.MPLS_VPN)
 RF_IPv6_VPN = RouteFamily(addr_family.IP6, subaddr_family.MPLS_VPN)
 RF_IPv4_MPLS = RouteFamily(addr_family.IP, subaddr_family.MPLS_LABEL)
 RF_IPv6_MPLS = RouteFamily(addr_family.IP6, subaddr_family.MPLS_LABEL)
+RF_L2_EVPN = RouteFamily(addr_family.L2VPN, subaddr_family.EVPN)
 RF_RTC_UC = RouteFamily(addr_family.IP,
                         subaddr_family.ROUTE_TARGET_CONSTRAINTS)
 
@@ -605,6 +608,7 @@ _rf_map = {
     (addr_family.IP6, subaddr_family.MPLS_VPN): RF_IPv6_VPN,
     (addr_family.IP, subaddr_family.MPLS_LABEL): RF_IPv4_MPLS,
     (addr_family.IP6, subaddr_family.MPLS_LABEL): RF_IPv6_MPLS,
+    (addr_family.L2VPN, subaddr_family.EVPN): RF_L2_EVPN,
     (addr_family.IP, subaddr_family.ROUTE_TARGET_CONSTRAINTS): RF_RTC_UC
 }
 
@@ -659,11 +663,11 @@ class _RouteDistinguisher(StringifyMixin, _TypeDisp, _Value):
         value = self.serialize_value()
         buf = bytearray()
         msg_pack_into(self._PACK_STR, buf, 0, self.type)
-        return buf + value
+        return six.binary_type(buf + value)
 
     @property
     def formatted_str(self):
-        return "%s:%s" % (str(self.admin), str(self.assigned))
+        return "%s:%s" % (self.admin, self.assigned)
 
 
 @_RouteDistinguisher.register_type(_RouteDistinguisher.TWO_OCTET_AS)
@@ -818,7 +822,7 @@ class _LabelledAddrPrefix(_AddrPrefix):
                       (label & 0xff0000) >> 16,
                       (label & 0x00ff00) >> 8,
                       (label & 0x0000ff) >> 0)
-        return buf
+        return six.binary_type(buf)
 
     @classmethod
     def _label_from_bin(cls, label):
@@ -1028,6 +1032,844 @@ class LabelledVPNIP6AddrPrefix(_LabelledAddrPrefix, _VPNAddrPrefix,
         return "%s:%s" % (self.route_dist, self.prefix)
 
 
+class EvpnEsi(StringifyMixin, _TypeDisp, _Value):
+    """
+    Ethernet Segment Identifier
+    """
+    _PACK_STR = "!B"  # ESI Type
+    _ESI_LEN = 10
+
+    ARBITRARY = 0x00
+    LACP = 0x01
+    L2_BRIDGE = 0x02
+    MAC_BASED = 0x03
+    ROUTER_ID = 0x04
+    AS_BASED = 0x05
+    MAX = 0xff  # Reserved
+
+    _TYPE_NAME = None  # must be defined in subclass
+
+    def __init__(self, type_=None):
+        if type_ is None:
+            type_ = self._rev_lookup_type(self.__class__)
+        self.type = type_
+
+    @classmethod
+    def parser(cls, buf):
+        (esi_type,) = struct.unpack_from(
+            cls._PACK_STR, six.binary_type(buf))
+        subcls = cls._lookup_type(esi_type)
+        return subcls(**subcls.parse_value(buf[1:cls._ESI_LEN]))
+
+    def serialize(self):
+        buf = bytearray()
+        msg_pack_into(EvpnEsi._PACK_STR, buf, 0, self.type)
+        return six.binary_type(buf + self.serialize_value())
+
+    @property
+    def formatted_str(self):
+        return '%s(%s)' % (
+            self._TYPE_NAME,
+            ','.join(str(getattr(self, v)) for v in self._VALUE_FIELDS))
+
+
+@EvpnEsi.register_unknown_type()
+class EvpnUnknownEsi(EvpnEsi):
+    """
+    ESI value for unknown type
+    """
+    _TYPE_NAME = 'unknown'
+    _VALUE_PACK_STR = '!9s'
+    _VALUE_FIELDS = ['value']
+
+    def __init__(self, value, type_=None):
+        super(EvpnUnknownEsi, self).__init__(type_)
+        self.value = value
+
+    @property
+    def formatted_str(self):
+        return '%s(%s)' % (self._TYPE_NAME, binary_str(self.value))
+
+
+@EvpnEsi.register_type(EvpnEsi.ARBITRARY)
+class EvpnArbitraryEsi(EvpnEsi):
+    """
+    Arbitrary 9-octet ESI value
+
+    This type indicates an arbitrary 9-octet ESI value,
+    which is managed and configured by the operator.
+    """
+    _TYPE_NAME = 'arbitrary'
+    _VALUE_PACK_STR = '!9s'
+    _VALUE_FIELDS = ['value']
+
+    def __init__(self, value, type_=None):
+        super(EvpnArbitraryEsi, self).__init__(type_)
+        self.value = value
+
+    @property
+    def formatted_str(self):
+        return '%s(%s)' % (self._TYPE_NAME, binary_str(self.value))
+
+
+@EvpnEsi.register_type(EvpnEsi.LACP)
+class EvpnLACPEsi(EvpnEsi):
+    """
+    ESI value for LACP
+
+    When IEEE 802.1AX LACP is used between the PEs and CEs,
+    this ESI type indicates an auto-generated ESI value
+    determined from LACP.
+    """
+    _TYPE_NAME = 'lacp'
+    _VALUE_PACK_STR = '!6sHx'
+    _VALUE_FIELDS = ['mac_addr', 'port_key']
+    _TYPE = {
+        'ascii': [
+            'mac_addr'
+        ]
+    }
+
+    def __init__(self, mac_addr, port_key, type_=None):
+        super(EvpnLACPEsi, self).__init__(type_)
+        self.mac_addr = mac_addr
+        self.port_key = port_key
+
+    @classmethod
+    def parse_value(cls, buf):
+        (mac_addr, port_key) = struct.unpack_from(cls._VALUE_PACK_STR, buf)
+        return {
+            'mac_addr': addrconv.mac.bin_to_text(mac_addr),
+            'port_key': port_key,
+        }
+
+    def serialize_value(self):
+        return struct.pack(
+            self._VALUE_PACK_STR,
+            addrconv.mac.text_to_bin(self.mac_addr), self.port_key)
+
+
+@EvpnEsi.register_type(EvpnEsi.L2_BRIDGE)
+class EvpnL2BridgeEsi(EvpnEsi):
+    """
+    ESI value for Layer 2 Bridge
+
+    This type is used in the case of indirectly connected hosts
+    via a bridged LAN between the CEs and the PEs.
+    The ESI Value is auto-generated and determined based
+    on the Layer 2 bridge protocol.
+    """
+    _TYPE_NAME = 'l2_bridge'
+    _VALUE_PACK_STR = '!6sHx'
+    _VALUE_FIELDS = ['mac_addr', 'priority']
+    _TYPE = {
+        'ascii': [
+            'mac_addr'
+        ]
+    }
+
+    def __init__(self, mac_addr, priority, type_=None):
+        super(EvpnL2BridgeEsi, self).__init__(type_)
+        self.mac_addr = mac_addr
+        self.priority = priority
+
+    @classmethod
+    def parse_value(cls, buf):
+        (mac_addr, priority) = struct.unpack_from(cls._VALUE_PACK_STR, buf)
+        return {
+            'mac_addr': addrconv.mac.bin_to_text(mac_addr),
+            'priority': priority,
+        }
+
+    def serialize_value(self):
+        return struct.pack(
+            self._VALUE_PACK_STR,
+            addrconv.mac.text_to_bin(self.mac_addr), self.priority)
+
+
+@EvpnEsi.register_type(EvpnEsi.MAC_BASED)
+class EvpnMacBasedEsi(EvpnEsi):
+    """
+    MAC-based ESI Value
+
+    This type indicates a MAC-based ESI Value that
+    can be auto-generated or configured by the operator.
+    """
+    _TYPE_NAME = 'mac_based'
+    _VALUE_PACK_STR = '!6s3s'
+    _VALUE_FIELDS = ['mac_addr', 'local_disc']
+    _TYPE = {
+        'ascii': [
+            'mac_addr'
+        ]
+    }
+
+    def __init__(self, mac_addr, local_disc, type_=None):
+        super(EvpnMacBasedEsi, self).__init__(type_)
+        self.mac_addr = mac_addr
+        self.local_disc = local_disc
+
+    @classmethod
+    def parse_value(cls, buf):
+        (mac_addr, local_disc) = struct.unpack_from(cls._VALUE_PACK_STR, buf)
+        return {
+            'mac_addr': addrconv.mac.bin_to_text(mac_addr),
+            'local_disc': type_desc.Int3.to_user(local_disc),
+        }
+
+    def serialize_value(self):
+        return struct.pack(
+            self._VALUE_PACK_STR,
+            addrconv.mac.text_to_bin(self.mac_addr),
+            type_desc.Int3.from_user(self.local_disc))
+
+
+@EvpnEsi.register_type(EvpnEsi.ROUTER_ID)
+class EvpnRouterIDEsi(EvpnEsi):
+    """
+    Router-ID ESI Value
+
+    This type indicates a router-ID ESI Value that
+    can be auto-generated or configured by the operator.
+    """
+    _TYPE_NAME = 'router_id'
+    _VALUE_PACK_STR = '!4sIx'
+    _VALUE_FIELDS = ['router_id', 'local_disc']
+    _TYPE = {
+        'ascii': [
+            'router_id'
+        ]
+    }
+
+    def __init__(self, router_id, local_disc, type_=None):
+        super(EvpnRouterIDEsi, self).__init__(type_)
+        self.router_id = router_id
+        self.local_disc = local_disc
+
+    @classmethod
+    def parse_value(cls, buf):
+        (router_id, local_disc) = struct.unpack_from(cls._VALUE_PACK_STR, buf)
+        return {
+            'router_id': addrconv.ipv4.bin_to_text(router_id),
+            'local_disc': local_disc,
+        }
+
+    def serialize_value(self):
+        return struct.pack(
+            self._VALUE_PACK_STR,
+            addrconv.ipv4.text_to_bin(self.router_id), self.local_disc)
+
+
+@EvpnEsi.register_type(EvpnEsi.AS_BASED)
+class EvpnASBasedEsi(EvpnEsi):
+    """
+    AS based ESI value
+
+    This type indicates an Autonomous System(AS)-based
+    ESI Value that can be auto-generated or configured by
+    the operator.
+    """
+    _TYPE_NAME = 'as_based'
+    _VALUE_PACK_STR = '!IIx'
+    _VALUE_FIELDS = ['as_number', 'local_disc']
+
+    def __init__(self, as_number, local_disc, type_=None):
+        super(EvpnASBasedEsi, self).__init__(type_)
+        self.as_number = as_number
+        self.local_disc = local_disc
+
+
+class EvpnNLRI(StringifyMixin, _TypeDisp):
+    """
+    BGP Network Layer Reachability Information (NLRI) for EVPN
+    """
+    ROUTE_FAMILY = RF_L2_EVPN
+
+    # EVPN NLRI:
+    # +-----------------------------------+
+    # |    Route Type (1 octet)           |
+    # +-----------------------------------+
+    # |     Length (1 octet)              |
+    # +-----------------------------------+
+    # | Route Type specific (variable)    |
+    # +-----------------------------------+
+    _PACK_STR = "!BB"
+    _PACK_STR_SIZE = struct.calcsize(_PACK_STR)
+
+    ETHERNET_AUTO_DISCOVERY = 0x01
+    MAC_IP_ADVERTISEMENT = 0x02
+    INCLUSIVE_MULTICAST_ETHERNET_TAG = 0x03
+    ETHERNET_SEGMENT = 0x04
+
+    ROUTE_TYPE_NAME = None  # must be defined in subclass
+
+    # Dictionary of ROUTE_TYPE_NAME to subclass.
+    # e.g.)
+    #   _NAMES = {'eth_ad': EvpnEthernetAutoDiscoveryNLRI, ...}
+    _NAMES = {}
+
+    # List of the fields considered to be part of the prefix in the NLRI.
+    # This list should be defined in subclasses to format NLRI string
+    # representation.
+    NLRI_PREFIX_FIELDS = []
+
+    def __init__(self, type_=None, length=None):
+        if type_ is None:
+            type_ = self._rev_lookup_type(self.__class__)
+        self.type = type_
+        self.length = length
+        self.route_dist = None  # should be initialized in subclass
+
+    @classmethod
+    def register_type(cls, type_):
+        cls._TYPES = cls._TYPES.copy()
+        cls._NAMES = cls._NAMES.copy()
+
+        def _register_type(subcls):
+            cls._TYPES[type_] = subcls
+            cls._NAMES[subcls.ROUTE_TYPE_NAME] = subcls
+            cls._REV_TYPES = None
+            return subcls
+
+        return _register_type
+
+    @classmethod
+    def _lookup_type_name(cls, type_name):
+        try:
+            return cls._NAMES[type_name]
+        except KeyError:
+            return EvpnUnknownNLRI
+
+    @classmethod
+    def parser(cls, buf):
+        (route_type, length) = struct.unpack_from(
+            cls._PACK_STR, six.binary_type(buf))
+        offset = cls._PACK_STR_SIZE + length
+        subcls = cls._lookup_type(route_type)
+        values = subcls.parse_value(buf[cls._PACK_STR_SIZE:offset])
+        return subcls(type_=route_type, length=length,
+                      **values), buf[offset:]
+
+    def serialize_value(self):
+        # Overrided in subclass
+        return b''
+
+    def serialize(self):
+        value_bin = self.serialize_value()
+        # fixup
+        self.length = len(value_bin)
+        return struct.pack(EvpnNLRI._PACK_STR,
+                           self.type, self.length) + value_bin
+
+    @staticmethod
+    def _rd_from_bin(buf):
+        return _RouteDistinguisher.parser(buf[:8]), buf[8:]
+
+    @staticmethod
+    def _rd_to_bin(rd):
+        return six.binary_type(rd.serialize())
+
+    @staticmethod
+    def _esi_from_bin(buf):
+        return EvpnEsi.parser(buf[:10]), buf[10:]
+
+    @staticmethod
+    def _esi_to_bin(esi):
+        return esi.serialize()
+
+    @staticmethod
+    def _ethernet_tag_id_from_bin(buf):
+        return type_desc.Int4.to_user(six.binary_type(buf[:4])), buf[4:]
+
+    @staticmethod
+    def _ethernet_tag_id_to_bin(tag_id):
+        return type_desc.Int4.from_user(tag_id)
+
+    @staticmethod
+    def _mac_addr_len_from_bin(buf):
+        return type_desc.Int1.to_user(six.binary_type(buf[:1])), buf[1:]
+
+    @staticmethod
+    def _mac_addr_len_to_bin(mac_len):
+        return type_desc.Int1.from_user(mac_len)
+
+    @staticmethod
+    def _mac_addr_from_bin(buf, mac_len):
+        mac_len //= 8
+        return addrconv.mac.bin_to_text(buf[:mac_len]), buf[mac_len:]
+
+    @staticmethod
+    def _mac_addr_to_bin(mac_addr):
+        return addrconv.mac.text_to_bin(mac_addr)
+
+    @staticmethod
+    def _ip_addr_len_from_bin(buf):
+        return type_desc.Int1.to_user(six.binary_type(buf[:1])), buf[1:]
+
+    @staticmethod
+    def _ip_addr_len_to_bin(ip_len):
+        return type_desc.Int1.from_user(ip_len)
+
+    @staticmethod
+    def _ip_addr_from_bin(buf, ip_len):
+        _len = ip_len // 8
+        if _len == 4:
+            return addrconv.ipv4.bin_to_text(buf[:_len]), buf[_len:]
+        elif _len == 16:
+            return addrconv.ipv6.bin_to_text(buf[:_len]), buf[_len:]
+        else:
+            raise struct.error('Invalid ip address length: %s' % ip_len)
+
+    @staticmethod
+    def _ip_addr_to_bin(ip_addr):
+        if '.' in ip_addr:
+            # IPv4 address
+            return addrconv.ipv4.text_to_bin(ip_addr)
+        else:
+            # IPv6 address
+            return addrconv.ipv6.text_to_bin(ip_addr)
+
+    @staticmethod
+    def _mpls_label_from_bin(buf):
+        mpls_label, rest = _LabelledAddrPrefix._label_from_bin(buf)
+        if mpls_label & 1:
+            is_stack = False
+        else:
+            is_stack = True
+        return mpls_label >> 4, rest, is_stack
+
+    @staticmethod
+    def _mpls_label_to_bin(label, is_stack=False):
+        if is_stack:
+            label = label << 4 | 0
+        else:
+            label = label << 4 | 1
+        return six.binary_type(_LabelledAddrPrefix._label_to_bin(label))
+
+    @staticmethod
+    def _vni_from_bin(buf):
+        return type_desc.Int3.to_user(six.binary_type(buf[:3])), buf[3:]
+
+    @staticmethod
+    def _vni_to_bin(vni):
+        return type_desc.Int3.from_user(vni)
+
+    @property
+    def prefix(self):
+        def _format(i):
+            pairs = []
+            for k in i.NLRI_PREFIX_FIELDS:
+                v = getattr(i, k)
+                if k == 'esi':
+                    pairs.append('%s:%s' % (k, v.formatted_str))
+                else:
+                    pairs.append('%s:%s' % (k, v))
+            return ','.join(pairs)
+
+        return '%s(%s)' % (self.ROUTE_TYPE_NAME, _format(self))
+
+    @property
+    def formatted_nlri_str(self):
+        return '%s:%s' % (self.route_dist, self.prefix)
+
+
+@EvpnNLRI.register_unknown_type()
+class EvpnUnknownNLRI(EvpnNLRI):
+    """
+    Unknown route type specific EVPN NLRI
+    """
+    ROUTE_TYPE_NAME = 'unknown'
+    NLRI_PREFIX_FIELDS = ['value']
+
+    def __init__(self, value, type_, length=None):
+        super(EvpnUnknownNLRI, self).__init__(type_, length)
+        self.value = value
+
+    @classmethod
+    def parse_value(cls, buf):
+        return {
+            'value': buf
+        }
+
+    def serialize_value(self):
+        return self.value
+
+    @property
+    def formatted_nlri_str(self):
+        return '%s(%s)' % (self.ROUTE_TYPE_NAME, binary_str(self.value))
+
+
+@EvpnNLRI.register_type(EvpnNLRI.ETHERNET_AUTO_DISCOVERY)
+class EvpnEthernetAutoDiscoveryNLRI(EvpnNLRI):
+    """
+    Ethernet A-D route type specific EVPN NLRI
+    """
+    ROUTE_TYPE_NAME = 'eth_ad'
+
+    # +---------------------------------------+
+    # |  Route Distinguisher (RD) (8 octets)  |
+    # +---------------------------------------+
+    # |Ethernet Segment Identifier (10 octets)|
+    # +---------------------------------------+
+    # |  Ethernet Tag ID (4 octets)           |
+    # +---------------------------------------+
+    # |  MPLS Label (3 octets)                |
+    # +---------------------------------------+
+    _PACK_STR = "!8s10sI3s"
+    NLRI_PREFIX_FIELDS = ['esi', 'ethernet_tag_id']
+    _TYPE = {
+        'ascii': [
+            'route_dist',
+        ]
+    }
+
+    def __init__(self, route_dist, esi, ethernet_tag_id,
+                 mpls_label=None, vni=None, label=None,
+                 type_=None, length=None):
+        super(EvpnEthernetAutoDiscoveryNLRI, self).__init__(type_, length)
+        self.route_dist = route_dist
+        self.esi = esi
+        self.ethernet_tag_id = ethernet_tag_id
+        if label:
+            # If binary type label field value is specified, stores it
+            # and decodes as MPLS label and VNI.
+            self._label = label
+            self._mpls_label, _, _ = self._mpls_label_from_bin(label)
+            self._vni, _ = self._vni_from_bin(label)
+        else:
+            # If either MPLS label or VNI is specified, stores it
+            # and encodes into binary type label field value.
+            self._label = self._serialize_label(mpls_label, vni)
+            self._mpls_label = mpls_label
+            self._vni = vni
+
+    def _serialize_label(self, mpls_label, vni):
+        if mpls_label:
+            return self._mpls_label_to_bin(mpls_label, is_stack=True)
+        elif vni:
+            return self._vni_to_bin(vni)
+        else:
+            return b'\x00' * 3
+
+    @classmethod
+    def parse_value(cls, buf):
+        route_dist, rest = cls._rd_from_bin(buf)
+        esi, rest = cls._esi_from_bin(rest)
+        ethernet_tag_id, rest = cls._ethernet_tag_id_from_bin(rest)
+
+        return {
+            'route_dist': route_dist.formatted_str,
+            'esi': esi,
+            'ethernet_tag_id': ethernet_tag_id,
+            'label': rest,
+        }
+
+    def serialize_value(self):
+        route_dist = _RouteDistinguisher.from_str(self.route_dist)
+        return struct.pack(
+            self._PACK_STR, route_dist.serialize(), self.esi.serialize(),
+            self.ethernet_tag_id, self._label)
+
+    @property
+    def mpls_label(self):
+        return self._mpls_label
+
+    @mpls_label.setter
+    def mpls_label(self, mpls_label):
+        self._label = self._mpls_label_to_bin(mpls_label, is_stack=True)
+        self._mpls_label = mpls_label
+        self._vni = None  # disables VNI
+
+    @property
+    def vni(self):
+        return self._vni
+
+    @vni.setter
+    def vni(self, vni):
+        self._label = self._vni_to_bin(vni)
+        self._mpls_label = None  # disables MPLS label
+        self._vni = vni
+
+    @property
+    def label_list(self):
+        return [self.mpls_label]
+
+
+@EvpnNLRI.register_type(EvpnNLRI.MAC_IP_ADVERTISEMENT)
+class EvpnMacIPAdvertisementNLRI(EvpnNLRI):
+    """
+    MAC/IP Advertisement route type specific EVPN NLRI
+    """
+    ROUTE_TYPE_NAME = 'mac_ip_adv'
+
+    # +---------------------------------------+
+    # |  RD (8 octets)                        |
+    # +---------------------------------------+
+    # |Ethernet Segment Identifier (10 octets)|
+    # +---------------------------------------+
+    # |  Ethernet Tag ID (4 octets)           |
+    # +---------------------------------------+
+    # |  MAC Address Length (1 octet)         |
+    # +---------------------------------------+
+    # |  MAC Address (6 octets)               |
+    # +---------------------------------------+
+    # |  IP Address Length (1 octet)          |
+    # +---------------------------------------+
+    # |  IP Address (0, 4, or 16 octets)      |
+    # +---------------------------------------+
+    # |  MPLS Label1 (3 octets)               |
+    # +---------------------------------------+
+    # |  MPLS Label2 (0 or 3 octets)          |
+    # +---------------------------------------+
+    _PACK_STR = "!8s10sIB6sB%ds%ds"
+    # Note: mac_addr_len and ip_addr_len are omitted for readability.
+    NLRI_PREFIX_FIELDS = ['ethernet_tag_id', 'mac_addr', 'ip_addr']
+    _TYPE = {
+        'ascii': [
+            'route_dist',
+            'mac_addr',
+            'ip_addr',
+        ]
+    }
+
+    def __init__(self, route_dist, esi, ethernet_tag_id, mac_addr, ip_addr,
+                 mpls_labels=None, vni=None, labels=None,
+                 mac_addr_len=None, ip_addr_len=None,
+                 type_=None, length=None):
+        super(EvpnMacIPAdvertisementNLRI, self).__init__(type_, length)
+        self.route_dist = route_dist
+        self.esi = esi
+        self.ethernet_tag_id = ethernet_tag_id
+        self.mac_addr_len = mac_addr_len
+        self.mac_addr = mac_addr
+        self.ip_addr_len = ip_addr_len
+        self.ip_addr = ip_addr
+        if labels:
+            # If binary type labels field value is specified, stores it
+            # and decodes as MPLS labels and VNI.
+            self._mpls_labels, self._vni = self._parse_labels(labels)
+            self._labels = labels
+        else:
+            # If either MPLS labels or VNI is specified, stores it
+            # and encodes into binary type labels field value.
+            self._labels = self._serialize_labels(mpls_labels, vni)
+            self._mpls_labels = mpls_labels
+            self._vni = vni
+
+    def _parse_labels(self, labels):
+        mpls_label1, rest, is_stack = self._mpls_label_from_bin(labels)
+        mpls_labels = [mpls_label1]
+        if rest and is_stack:
+            mpls_label2, rest, _ = self._mpls_label_from_bin(rest)
+            mpls_labels.append(mpls_label2)
+        vni, _ = self._vni_from_bin(labels)
+        return mpls_labels, vni
+
+    def _serialize_labels(self, mpls_labels, vni):
+        if mpls_labels:
+            return self._serialize_mpls_labels(mpls_labels)
+        elif vni:
+            return self._vni_to_bin(vni)
+        else:
+            return b'\x00' * 3
+
+    def _serialize_mpls_labels(self, mpls_labels):
+        if len(mpls_labels) == 1:
+            return self._mpls_label_to_bin(mpls_labels[0], is_stack=False)
+        elif len(mpls_labels) == 2:
+            return (self._mpls_label_to_bin(mpls_labels[0], is_stack=True) +
+                    self._mpls_label_to_bin(mpls_labels[1], is_stack=False))
+        else:
+            return b'\x00' * 3
+
+    @classmethod
+    def parse_value(cls, buf):
+        route_dist, rest = cls._rd_from_bin(buf)
+        esi, rest = cls._esi_from_bin(rest)
+        ethernet_tag_id, rest = cls._ethernet_tag_id_from_bin(rest)
+        mac_addr_len, rest = cls._mac_addr_len_from_bin(rest)
+        mac_addr, rest = cls._mac_addr_from_bin(rest, mac_addr_len)
+        ip_addr_len, rest = cls._ip_addr_len_from_bin(rest)
+        if ip_addr_len != 0:
+            ip_addr, rest = cls._ip_addr_from_bin(rest, ip_addr_len)
+        else:
+            ip_addr = None
+
+        return {
+            'route_dist': route_dist.formatted_str,
+            'esi': esi,
+            'ethernet_tag_id': ethernet_tag_id,
+            'mac_addr_len': mac_addr_len,
+            'mac_addr': mac_addr,
+            'ip_addr_len': ip_addr_len,
+            'ip_addr': ip_addr,
+            'labels': rest,
+        }
+
+    def serialize_value(self):
+        route_dist = _RouteDistinguisher.from_str(self.route_dist)
+        mac_addr = self._mac_addr_to_bin(self.mac_addr)
+        self.mac_addr_len = len(mac_addr) * 8  # fixup
+        if self.ip_addr:
+            ip_addr = self._ip_addr_to_bin(self.ip_addr)
+        else:
+            ip_addr = b''
+        ip_addr_len = len(ip_addr)
+        self.ip_addr_len = ip_addr_len * 8  # fixup
+
+        return struct.pack(
+            self._PACK_STR % (ip_addr_len, len(self._labels)),
+            route_dist.serialize(), self.esi.serialize(),
+            self.ethernet_tag_id,
+            self.mac_addr_len, mac_addr,
+            self.ip_addr_len, ip_addr,
+            self._labels)
+
+    @property
+    def mpls_labels(self):
+        return self._mpls_labels
+
+    @mpls_labels.setter
+    def mpls_labels(self, mpls_labels):
+        self._labels = self._serialize_mpls_labels(mpls_labels)
+        self._mpls_labels = mpls_labels
+        self._vni = None  # disables VNI
+
+    @property
+    def vni(self):
+        return self._vni
+
+    @vni.setter
+    def vni(self, vni):
+        self._labels = self._vni_to_bin(vni)
+        self._mpls_labels = None  # disables MPLS labels
+        self._vni = vni
+
+    @property
+    def label_list(self):
+        return self.mpls_labels
+
+
+@EvpnNLRI.register_type(EvpnNLRI.INCLUSIVE_MULTICAST_ETHERNET_TAG)
+class EvpnInclusiveMulticastEthernetTagNLRI(EvpnNLRI):
+    """
+    Inclusive Multicast Ethernet Tag route type specific EVPN NLRI
+    """
+    ROUTE_TYPE_NAME = 'multicast_etag'
+
+    # +---------------------------------------+
+    # |  RD (8 octets)                        |
+    # +---------------------------------------+
+    # |  Ethernet Tag ID (4 octets)           |
+    # +---------------------------------------+
+    # |  IP Address Length (1 octet)          |
+    # +---------------------------------------+
+    # |  Originating Router's IP Address      |
+    # |          (4 or 16 octets)             |
+    # +---------------------------------------+
+    _PACK_STR = '!8sIB%ds'
+    NLRI_PREFIX_FIELDS = ['ethernet_tag_id', 'ip_addr']
+    _TYPE = {
+        'ascii': [
+            'route_dist',
+            'ip_addr',
+        ]
+    }
+
+    def __init__(self, route_dist, ethernet_tag_id, ip_addr,
+                 ip_addr_len=None, type_=None, length=None):
+        super(EvpnInclusiveMulticastEthernetTagNLRI,
+              self).__init__(type_, length)
+        self.route_dist = route_dist
+        self.ethernet_tag_id = ethernet_tag_id
+        self.ip_addr_len = ip_addr_len
+        self.ip_addr = ip_addr
+
+    @classmethod
+    def parse_value(cls, buf):
+        route_dist, rest = cls._rd_from_bin(buf)
+        ethernet_tag_id, rest = cls._ethernet_tag_id_from_bin(rest)
+        ip_addr_len, rest = cls._ip_addr_len_from_bin(rest)
+        ip_addr, rest = cls._ip_addr_from_bin(rest, ip_addr_len)
+
+        return {
+            'route_dist': route_dist.formatted_str,
+            'ethernet_tag_id': ethernet_tag_id,
+            'ip_addr_len': ip_addr_len,
+            'ip_addr': ip_addr,
+        }
+
+    def serialize_value(self):
+        route_dist = _RouteDistinguisher.from_str(self.route_dist)
+        ip_addr = self._ip_addr_to_bin(self.ip_addr)
+        self.ip_addr_len = len(ip_addr) * 8  # fixup
+
+        return struct.pack(
+            self._PACK_STR % len(ip_addr),
+            route_dist.serialize(), self.ethernet_tag_id,
+            self.ip_addr_len, ip_addr)
+
+
+@EvpnNLRI.register_type(EvpnNLRI.ETHERNET_SEGMENT)
+class EvpnEthernetSegmentNLRI(EvpnNLRI):
+    """
+    Ethernet Segment route type specific EVPN NLRI
+    """
+    ROUTE_TYPE_NAME = 'eth_seg'
+
+    # +---------------------------------------+
+    # |  RD (8 octets)                        |
+    # +---------------------------------------+
+    # |Ethernet Segment Identifier (10 octets)|
+    # +---------------------------------------+
+    # |  IP Address Length (1 octet)          |
+    # +---------------------------------------+
+    # |  Originating Router's IP Address      |
+    # |          (4 or 16 octets)             |
+    # +---------------------------------------+
+    _PACK_STR = '!8s10sB%ds'
+    NLRI_PREFIX_FIELDS = ['esi', 'ip_addr']
+    _TYPE = {
+        'ascii': [
+            'route_dist',
+            'ip_addr',
+        ]
+    }
+
+    def __init__(self, route_dist, esi, ip_addr, ip_addr_len=None,
+                 type_=None, length=None):
+        super(EvpnEthernetSegmentNLRI, self).__init__(type_, length)
+        self.route_dist = route_dist
+        self.esi = esi
+        self.ip_addr_len = ip_addr_len
+        self.ip_addr = ip_addr
+
+    @classmethod
+    def parse_value(cls, buf):
+        route_dist, rest = cls._rd_from_bin(buf)
+        esi, rest = cls._esi_from_bin(rest)
+        ip_addr_len, rest = cls._ip_addr_len_from_bin(rest)
+        ip_addr, rest = cls._ip_addr_from_bin(rest, ip_addr_len)
+
+        return {
+            'route_dist': route_dist.formatted_str,
+            'esi': esi,
+            'ip_addr_len': ip_addr_len,
+            'ip_addr': ip_addr,
+        }
+
+    def serialize_value(self):
+        route_dist = _RouteDistinguisher.from_str(self.route_dist)
+        ip_addr = self._ip_addr_to_bin(self.ip_addr)
+        # fixup
+        self.ip_addr_len = len(ip_addr) * 8
+
+        return struct.pack(
+            self._PACK_STR % len(ip_addr),
+            route_dist.serialize(), self.esi.serialize(),
+            self.ip_addr_len, ip_addr)
+
+
 @functools.total_ordering
 class RouteTargetMembershipNLRI(StringifyMixin):
     """Route Target Membership NLRI.
@@ -1137,6 +1979,7 @@ _ADDR_CLASSES = {
     _addr_class_key(RF_IPv6_MPLS): LabelledIP6AddrPrefix,
     _addr_class_key(RF_IPv4_VPN): LabelledVPNIPAddrPrefix,
     _addr_class_key(RF_IPv6_VPN): LabelledVPNIP6AddrPrefix,
+    _addr_class_key(RF_L2_EVPN): EvpnNLRI,
     _addr_class_key(RF_RTC_UC): RouteTargetMembershipNLRI,
 }
 
@@ -1868,6 +2711,7 @@ class BGPPathAttributeClusterList(_PathAttribute):
 # 00    03          Route Origin Community (two-octet AS specific)
 # 01    03          Route Origin Community (IPv4 address specific)
 # 02    03          Route Origin Community (four-octet AS specific, RFC 5668)
+# 06    sub-type    Ethernet VPN Extended Community (RFC 7432)
 
 @_PathAttribute.register_type(BGP_ATTR_TYPE_EXTENDED_COMMUNITIES)
 class BGPPathAttributeExtendedCommunities(_PathAttribute):
@@ -1921,7 +2765,9 @@ class BGPPathAttributeExtendedCommunities(_PathAttribute):
 
 
 class _ExtendedCommunity(StringifyMixin, _TypeDisp, _Value):
-    _PACK_STR = '!B7s'  # type high (+ type low) + value
+    _PACK_STR = '!B7s'  # type high (+ type low), value
+    _PACK_STR_SIZE = struct.calcsize(_PACK_STR)
+    _SUBTYPE_PACK_STR = '!B'  # subtype
     IANA_AUTHORITY = 0x80
     TRANSITIVE = 0x40
     _TYPE_HIGH_MASK = ~TRANSITIVE
@@ -1930,27 +2776,42 @@ class _ExtendedCommunity(StringifyMixin, _TypeDisp, _Value):
     IPV4_ADDRESS_SPECIFIC = 0x01
     FOUR_OCTET_AS_SPECIFIC = 0x02
     OPAQUE = 0x03
+    SUBTYPE_ENCAPSULATION = 0x0c
+    ENCAPSULATION = (OPAQUE, SUBTYPE_ENCAPSULATION)
+    EVPN = 0x06
+    SUBTYPE_EVPN_MAC_MOBILITY = 0x00
+    SUBTYPE_EVPN_ESI_LABEL = 0x01
+    SUBTYPE_EVPN_ES_IMPORT_RT = 0x02
+    EVPN_MAC_MOBILITY = (EVPN, SUBTYPE_EVPN_MAC_MOBILITY)
+    EVPN_ESI_LABEL = (EVPN, SUBTYPE_EVPN_ESI_LABEL)
+    EVPN_ES_IMPORT_RT = (EVPN, SUBTYPE_EVPN_ES_IMPORT_RT)
 
     def __init__(self, type_=None):
         if type_ is None:
             type_ = self._rev_lookup_type(self.__class__)
+            if isinstance(type_, (tuple, list)):
+                type_ = type_[0]
         self.type = type_
 
     @classmethod
+    def parse_subtype(cls, buf):
+        (subtype,) = struct.unpack_from(cls._SUBTYPE_PACK_STR, buf)
+        return subtype
+
+    @classmethod
     def parse(cls, buf):
-        (type_high, payload) = struct.unpack_from(cls._PACK_STR,
-                                                  six.binary_type(buf))
-        rest = buf[struct.calcsize(cls._PACK_STR):]
-        type_ = type_high & cls._TYPE_HIGH_MASK
-        subcls = cls._lookup_type(type_)
-        return subcls(type_=type_high,
-                      **subcls.parse_value(payload)), rest
+        (type_, value) = struct.unpack_from(cls._PACK_STR, buf)
+        rest = buf[cls._PACK_STR_SIZE:]
+        type_low = type_ & cls._TYPE_HIGH_MASK
+        subtype = cls.parse_subtype(value)
+        subcls = cls._lookup_type((type_low, subtype))
+        if subcls == cls._UNKNOWN_TYPE:
+            subcls = cls._lookup_type(type_low)
+        return subcls(type_=type_, **subcls.parse_value(value)), rest
 
     def serialize(self):
-        buf = bytearray()
-        msg_pack_into(self._PACK_STR, buf, 0, self.type,
-                      bytes(self.serialize_value()))
-        return buf
+        return struct.pack(self._PACK_STR, self.type,
+                           self.serialize_value())
 
 
 @_ExtendedCommunity.register_type(_ExtendedCommunity.TWO_OCTET_AS_SPECIFIC)
@@ -1985,15 +2846,9 @@ class BGPIPv4AddressSpecificExtendedCommunity(_ExtendedCommunity):
         return d_
 
     def serialize_value(self):
-        args = []
-        for f in self._VALUE_FIELDS:
-            v = getattr(self, f)
-            if f == 'ipv4_address':
-                v = bytes(addrconv.ipv4.text_to_bin(v))
-            args.append(v)
-        buf = bytearray()
-        msg_pack_into(self._VALUE_PACK_STR, buf, 0, *args)
-        return buf
+        return struct.pack(self._VALUE_PACK_STR, self.subtype,
+                           addrconv.ipv4.text_to_bin(self.ipv4_address),
+                           self.local_administrator)
 
 
 @_ExtendedCommunity.register_type(_ExtendedCommunity.FOUR_OCTET_AS_SPECIFIC)
@@ -2008,12 +2863,142 @@ class BGPFourOctetAsSpecificExtendedCommunity(_ExtendedCommunity):
 
 @_ExtendedCommunity.register_type(_ExtendedCommunity.OPAQUE)
 class BGPOpaqueExtendedCommunity(_ExtendedCommunity):
-    _VALUE_PACK_STR = '!7s'  # opaque value
-    _VALUE_FIELDS = ['opaque']
+    _VALUE_PACK_STR = '!B6s'
+    _VALUE_FIELDS = ['subtype', 'opaque']
 
     def __init__(self, **kwargs):
         super(BGPOpaqueExtendedCommunity, self).__init__()
         self.do_init(BGPOpaqueExtendedCommunity, self, kwargs)
+
+
+@_ExtendedCommunity.register_type(_ExtendedCommunity.ENCAPSULATION)
+class BGPEncapsulationExtendedCommunity(_ExtendedCommunity):
+    _VALUE_PACK_STR = '!B4xH'
+    _VALUE_FIELDS = ['subtype', 'tunnel_type']
+
+    # BGP Tunnel Encapsulation Attribute Tunnel Types
+    # http://www.iana.org/assignments/bgp-parameters/bgp-parameters.xhtml#tunnel-types
+    TUNNEL_TYPE_L2TPV3 = 1
+    TUNNEL_TYPE_GRE = 2
+    TUNNEL_TYPE_IP_IN_IP = 7
+    TUNNEL_TYPE_VXLAN = 8
+    TUNNEL_TYPE_NVGRE = 9
+    TUNNEL_TYPE_MPLS = 10
+    TUNNEL_TYPE_MPLS_IN_GRE = 11
+    TUNNEL_TYPE_VXLAN_GRE = 12
+    TUNNEL_TYPE_MPLS_IN_UDP = 13
+
+    def __init__(self, **kwargs):
+        super(BGPEncapsulationExtendedCommunity, self).__init__()
+        self.do_init(BGPEncapsulationExtendedCommunity, self, kwargs)
+
+    @classmethod
+    def from_str(cls, tunnel_type):
+        """
+        Returns an instance identified with the given `tunnel_type`.
+
+        `tunnel_type` should be a str type value and corresponding to
+        BGP Tunnel Encapsulation Attribute Tunnel Type constants name
+        omitting `TUNNEL_TYPE_` prefix.
+
+        Example:
+            - `gre` means TUNNEL_TYPE_GRE
+            - `vxlan` means TUNNEL_TYPE_VXLAN
+
+        And raises AttributeError when the corresponding Tunnel Type
+        is not found to the given `tunnel_type`.
+        """
+        return cls(subtype=_ExtendedCommunity.SUBTYPE_ENCAPSULATION,
+                   tunnel_type=getattr(cls,
+                                       'TUNNEL_TYPE_' + tunnel_type.upper()))
+
+
+@_ExtendedCommunity.register_type(_ExtendedCommunity.EVPN_MAC_MOBILITY)
+class BGPEvpnMacMobilityExtendedCommunity(_ExtendedCommunity):
+    """
+    MAC Mobility Extended Community
+    """
+    #  0 1 2 3 4 5 6 7 8 9 0 1 2 3 4 5 6 7 8 9 0 1 2 3 4 5 6 7 8 9 0 1
+    # +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+    # | Type=0x06     | Sub-Type=0x00 |Flags(1 octet)|  Reserved=0    |
+    # +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+    # |                       Sequence Number                         |
+    # +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+    _VALUE_PACK_STR = '!BBxI'
+    _VALUE_FIELDS = ['subtype', 'flags', 'sequence_number']
+
+    def __init__(self, **kwargs):
+        super(BGPEvpnMacMobilityExtendedCommunity, self).__init__()
+        self.do_init(BGPEvpnMacMobilityExtendedCommunity, self, kwargs)
+
+
+@_ExtendedCommunity.register_type(_ExtendedCommunity.EVPN_ESI_LABEL)
+class BGPEvpnEsiLabelExtendedCommunity(_ExtendedCommunity):
+    """
+    ESI Label Extended Community
+    """
+    #  0 1 2 3 4 5 6 7 8 9 0 1 2 3 4 5 6 7 8 9 0 1 2 3 4 5 6 7 8 9 0 1
+    # +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+    # | Type=0x06     | Sub-Type=0x01 | Flags(1 octet)|  Reserved=0   |
+    # +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+    # |  Reserved=0   |          ESI Label                            |
+    # +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+    _VALUE_PACK_STR = '!BB2x3s'
+    _VALUE_FIELDS = ['subtype', 'flags', 'esi_label']
+
+    def __init__(self, **kwargs):
+        super(BGPEvpnEsiLabelExtendedCommunity, self).__init__()
+        self.do_init(BGPEvpnEsiLabelExtendedCommunity, self, kwargs)
+
+    @classmethod
+    def parse_value(cls, buf):
+        (subtype, flags,
+         esi_label) = struct.unpack_from(cls._VALUE_PACK_STR, buf)
+        return {
+            'subtype': subtype,
+            'flags': flags,
+            'esi_label': type_desc.Int3.to_user(esi_label),
+        }
+
+    def serialize_value(self):
+        return struct.pack(self._VALUE_PACK_STR, self.subtype, self.flags,
+                           type_desc.Int3.from_user(self.esi_label))
+
+
+@_ExtendedCommunity.register_type(_ExtendedCommunity.EVPN_ES_IMPORT_RT)
+class BGPEvpnEsImportRTExtendedCommunity(_ExtendedCommunity):
+    """
+    ES-Import Route Target Extended Community
+    """
+    #  0 1 2 3 4 5 6 7 8 9 0 1 2 3 4 5 6 7 8 9 0 1 2 3 4 5 6 7 8 9 0 1
+    # +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+    # | Type=0x06     | Sub-Type=0x02 |          ES-Import            |
+    # +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+    # |                     ES-Import Cont'd                          |
+    # +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+    _VALUE_PACK_STR = '!B6s'
+    _VALUE_FIELDS = ['subtype', 'es_import']
+    _TYPE = {
+        'ascii': [
+            'es_import'
+        ]
+    }
+
+    def __init__(self, **kwargs):
+        super(BGPEvpnEsImportRTExtendedCommunity, self).__init__()
+        self.do_init(BGPEvpnEsImportRTExtendedCommunity, self, kwargs)
+
+    @classmethod
+    def parse_value(cls, buf):
+        (subtype, es_import) = struct.unpack_from(cls._VALUE_PACK_STR, buf)
+        return {
+            'subtype': subtype,
+            'es_import': addrconv.mac.bin_to_text(es_import),
+        }
+
+    def serialize_value(self):
+        return struct.pack(self._VALUE_PACK_STR, self.subtype,
+                           addrconv.mac.text_to_bin(self.es_import))
 
 
 @_ExtendedCommunity.register_unknown_type()
@@ -2047,7 +3032,7 @@ class BGPPathAttributeMpReachNLRI(_PathAttribute):
         self.safi = safi
         self.next_hop_len = next_hop_len
         self.next_hop = next_hop
-        if afi == addr_family.IP:
+        if afi == addr_family.IP or afi == addr_family.L2VPN:
             self._next_hop_bin = addrconv.ipv4.text_to_bin(next_hop)
         elif afi == addr_family.IP6:
             self._next_hop_bin = addrconv.ipv6.text_to_bin(next_hop)
@@ -2082,9 +3067,9 @@ class BGPPathAttributeMpReachNLRI(_PathAttribute):
         elif rf == RF_IPv4_VPN:
             next_hop = addrconv.ipv4.bin_to_text(next_hop_bin[cls._rd_length:])
             next_hop_len -= cls._rd_length
-        elif afi == addr_family.IP:
+        elif afi == addr_family.IP or (rf == RF_L2_EVPN and next_hop_len == 4):
             next_hop = addrconv.ipv4.bin_to_text(next_hop_bin)
-        elif afi == addr_family.IP6:
+        elif afi == addr_family.IP6 or (rf == RF_L2_EVPN and next_hop_len > 4):
             # next_hop_bin can include global address and link-local address
             # according to RFC2545. Since a link-local address isn't needed in
             # Ryu BGPSpeaker, we ignore it if both addresses were sent.
@@ -2238,7 +3223,8 @@ class BGPMessage(packet_base.PacketBase, _TypeDisp):
         rest = buf[msglen:]
         subcls = cls._lookup_type(type_)
         kwargs = subcls.parser(binmsg)
-        return subcls(marker=marker, len_=len_, type_=type_, **kwargs), rest
+        return subcls(marker=marker, len_=len_, type_=type_,
+                      **kwargs), None, rest
 
     def serialize(self, payload=None, prev=None):
         # fixup
@@ -2574,7 +3560,7 @@ class BGPNotification(BGPMessage):
     def __init__(self,
                  error_code,
                  error_subcode,
-                 data='',
+                 data=b'',
                  type_=BGP_MSG_NOTIFICATION, len_=None, marker=None):
         super(BGPNotification, self).__init__(marker=marker, len_=len_,
                                               type_=type_)
@@ -2661,4 +3647,5 @@ class StreamParser(stream_parser.StreamParser):
     """
 
     def try_parse(self, data):
-        return BGPMessage.parser(data)
+        msg, _, rest = BGPMessage.parser(data)
+        return msg, rest

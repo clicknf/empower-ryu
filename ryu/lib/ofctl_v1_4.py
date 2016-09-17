@@ -827,7 +827,7 @@ def mod_flow_entry(dp, flow, cmd):
     flow_mod = dp.ofproto_parser.OFPFlowMod(
         dp, cookie, cookie_mask, table_id, cmd, idle_timeout,
         hard_timeout, priority, buffer_id, out_port, out_group,
-        importance, flags, match, inst)
+        flags, importance, match, inst)
 
     ofctl_utils.send_msg(dp, flow_mod, LOG)
 
@@ -937,6 +937,12 @@ def mod_port_behavior(dp, port_config):
         dp, port_no, hw_addr, config, mask, prop)
 
     ofctl_utils.send_msg(dp, port_mod, LOG)
+
+
+def set_role(dp, role):
+    r = UTIL.ofp_role_from_user(role.get('role', dp.ofproto.OFPCR_ROLE_EQUAL))
+    role_request = dp.ofproto_parser.OFPRoleRequest(dp, r, 0)
+    ofctl_utils.send_msg(dp, role_request, LOG)
 
 
 # NOTE(jkoelker) Alias common funcitons
