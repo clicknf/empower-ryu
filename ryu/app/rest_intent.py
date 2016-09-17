@@ -66,7 +66,7 @@ class IntentRule(object):
         if 'stp_dpid' in rule:
             self.stp_dpid = empower_to_dpid(rule['stp_dpid'])
             self.stp_port = int(rule['stp_port'])
-            
+
     def to_jsondict(self):
         """Return JSON representation of this object."""
 
