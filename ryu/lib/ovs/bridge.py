@@ -19,9 +19,9 @@ slimmed down version of OVSBridge in quantum agent
 """
 
 import functools
-from ryu import cfg
 import logging
 
+from ryu import cfg
 import ryu.exception as ryu_exc
 import ryu.lib.dpid as dpid_lib
 import ryu.lib.ovs.vsctl as ovs_vsctl
@@ -115,11 +115,10 @@ class OVSBridge(object):
             ('Bridge',
              'datapath_id=%s' % dpid_lib.dpid_to_str(self.datapath_id)))
         self.run_command([command])
-        result = command.result
-        if len(result) == 0 or len(result) > 1:
+        if not isinstance(command.result, list) or len(command.result) != 1:
             raise OVSBridgeNotFound(
                 datapath_id=dpid_lib.dpid_to_str(self.datapath_id))
-        return result[0].name
+        return command.result[0].name
 
     def get_controller(self):
         command = ovs_vsctl.VSCtlCommand('get-controller', [self.br_name])
@@ -135,13 +134,109 @@ class OVSBridge(object):
         command = ovs_vsctl.VSCtlCommand('del-controller', [self.br_name])
         self.run_command([command])
 
-    def set_db_attribute(self, table_name, record, column, value):
+    def list_db_attributes(self, table, record=None):
+        """
+        Lists 'record' (or all records) in 'table'.
+
+        This method is corresponding to the following ovs-vsctl command::
+
+            $ ovs-vsctl list TBL [REC]
+        """
+        command = ovs_vsctl.VSCtlCommand('list', (table, record))
+        self.run_command([command])
+        if command.result:
+            return command.result
+        return []
+
+    def find_db_attributes(self, table, *conditions):
+        """
+        Lists records satisfying 'conditions' in 'table'.
+
+        This method is corresponding to the following ovs-vsctl command::
+
+            $ ovs-vsctl find TBL CONDITION...
+
+        .. Note::
+
+            Currently, only '=' condition is supported.
+            To support other condition is TODO.
+        """
+        args = [table]
+        args.extend(conditions)
+        command = ovs_vsctl.VSCtlCommand('find', args)
+        self.run_command([command])
+        if command.result:
+            return command.result
+        return []
+
+    def get_db_attribute(self, table, record, column, key=None):
+        """
+        Gets values of 'column' in 'record' in 'table'.
+
+        This method is corresponding to the following ovs-vsctl command::
+
+            $ ovs-vsctl get TBL REC COL[:KEY]
+        """
+        if key is not None:
+            column = '%s:%s' % (column, key)
         command = ovs_vsctl.VSCtlCommand(
-            'set', (table_name, record, '%s=%s' % (column, value)))
+            'get', (table, record, column))
+        self.run_command([command])
+        if command.result:
+            return command.result[0]
+        return None
+
+    def set_db_attribute(self, table, record, column, value, key=None):
+        """
+        Sets 'value' into 'column' in 'record' in 'table'.
+
+        This method is corresponding to the following ovs-vsctl command::
+
+            $ ovs-vsctl set TBL REC COL[:KEY]=VALUE
+        """
+        if key is not None:
+            column = '%s:%s' % (column, key)
+        command = ovs_vsctl.VSCtlCommand(
+            'set', (table, record, '%s=%s' % (column, value)))
         self.run_command([command])
 
-    def clear_db_attribute(self, table_name, record, column):
-        command = ovs_vsctl.VSCtlCommand('clear', (table_name, record, column))
+    def add_db_attribute(self, table, record, column, value, key=None):
+        """
+        Adds ('key'=)'value' into 'column' in 'record' in 'table'.
+
+        This method is corresponding to the following ovs-vsctl command::
+
+            $ ovs-vsctl add TBL REC COL [KEY=]VALUE
+        """
+        if key is not None:
+            value = '%s=%s' % (key, value)
+        command = ovs_vsctl.VSCtlCommand(
+            'add', (table, record, column, value))
+        self.run_command([command])
+
+    def remove_db_attribute(self, table, record, column, value, key=None):
+        """
+        Removes ('key'=)'value' into 'column' in 'record' in 'table'.
+
+        This method is corresponding to the following ovs-vsctl command::
+
+            $ ovs-vsctl remove TBL REC COL [KEY=]VALUE
+        """
+        if key is not None:
+            value = '%s=%s' % (key, value)
+        command = ovs_vsctl.VSCtlCommand(
+            'remove', (table, record, column, value))
+        self.run_command([command])
+
+    def clear_db_attribute(self, table, record, column):
+        """
+        Clears values from 'column' in 'record' in 'table'.
+
+        This method is corresponding to the following ovs-vsctl command::
+
+            $ ovs-vsctl clear TBL REC COL
+        """
+        command = ovs_vsctl.VSCtlCommand('clear', (table, record, column))
         self.run_command([command])
 
     def db_get_val(self, table, record, column):
@@ -152,7 +247,7 @@ class OVSBridge(object):
 
     def db_get_map(self, table, record, column):
         val = self.db_get_val(table, record, column)
-        assert type(val) == dict
+        assert isinstance(val, dict)
         return val
 
     def get_datapath_id(self):
@@ -160,7 +255,7 @@ class OVSBridge(object):
 
     def delete_port(self, port_name):
         command = ovs_vsctl.VSCtlCommand(
-            'del-port', (self.br_name, port_name), ('--if-exists'))
+            'del-port', (self.br_name, port_name), '--if-exists')
         self.run_command([command])
 
     def get_ofport(self, port_name):
@@ -173,6 +268,28 @@ class OVSBridge(object):
         self.run_command([command])
         return command.result
 
+    def add_bond(self, name, ifaces, bond_mode=None, lacp=None):
+        """
+        Creates a bonded port.
+
+        :param name: Port name to be created
+        :param ifaces: List of interfaces containing at least 2 interfaces
+        :param bond_mode: Bonding mode (active-backup, balance-tcp
+                          or balance-slb)
+        :param lacp: LACP mode (active, passive or off)
+        """
+        assert len(ifaces) >= 2
+
+        options = ''
+        if bond_mode:
+            options += 'bond_mode=%(bond_mode)s' % locals()
+        if lacp:
+            options += 'lacp=%(lacp)s' % locals()
+
+        command_add = ovs_vsctl.VSCtlCommand(
+            'add-bond', (self.br_name, name, ifaces), options)
+        self.run_command([command_add])
+
     def add_tunnel_port(self, name, tunnel_type, remote_ip,
                         local_ip=None, key=None, ofport=None):
         options = 'remote_ip=%(remote_ip)s' % locals()
@@ -182,7 +299,7 @@ class OVSBridge(object):
             options += ',local_ip=%(local_ip)s' % locals()
 
         args = ['Interface', name, 'type=%s' % tunnel_type,
-                'options=%s' % options]
+                'options:%s' % options]
         if ofport:
             args.append('ofport_request=%(ofport)s' % locals())
 
@@ -227,7 +344,7 @@ class OVSBridge(object):
             return self._vifport(name, external_ids)
 
     def get_vif_ports(self):
-        'returns a VIF object for each VIF port'
+        """ Returns a VIF object for each VIF port """
         return self._get_ports(self._get_vif_port)
 
     def _get_external_port(self, name):
