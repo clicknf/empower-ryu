@@ -24,6 +24,7 @@ import six
 from ryu.lib.packet.bgp import BGP_ATTR_TYPE_ORIGIN
 from ryu.lib.packet.bgp import BGP_ATTR_TYPE_AS_PATH
 from ryu.lib.packet.bgp import BGP_ATTR_TYPE_EXTENDED_COMMUNITIES
+from ryu.lib.packet.bgp import BGP_ATTR_TYEP_PMSI_TUNNEL_ATTRIBUTE
 from ryu.lib.packet.bgp import BGP_ATTR_TYPE_MULTI_EXIT_DISC
 from ryu.lib.packet.bgp import BGPPathAttributeOrigin
 from ryu.lib.packet.bgp import BGPPathAttributeAsPath
@@ -31,8 +32,11 @@ from ryu.lib.packet.bgp import BGPPathAttributeExtendedCommunities
 from ryu.lib.packet.bgp import BGPTwoOctetAsSpecificExtendedCommunity
 from ryu.lib.packet.bgp import BGPPathAttributeMultiExitDisc
 from ryu.lib.packet.bgp import BGPEncapsulationExtendedCommunity
+from ryu.lib.packet.bgp import BGPPathAttributePmsiTunnel
+from ryu.lib.packet.bgp import PmsiTunnelIdIngressReplication
 from ryu.lib.packet.bgp import RF_L2_EVPN
 from ryu.lib.packet.bgp import EvpnMacIPAdvertisementNLRI
+from ryu.lib.packet.bgp import EvpnIpPrefixNLRI
 
 from ryu.services.protocols.bgp.base import OrderedDict
 from ryu.services.protocols.bgp.constants import VPN_TABLE
@@ -271,9 +275,26 @@ class VrfTable(Table):
                 # If we do not have next_hop, get a new label.
                 label_list.append(table_manager.get_next_vpnv4_label())
 
+            # Set PMSI Tunnel Attribute
+            pmsi_tunnel_type = kwargs.get('pmsi_tunnel_type', None)
+            if pmsi_tunnel_type is not None:
+                from ryu.services.protocols.bgp.api.prefix import (
+                    PMSI_TYPE_INGRESS_REP)
+                if pmsi_tunnel_type == PMSI_TYPE_INGRESS_REP:
+                    tunnel_id = PmsiTunnelIdIngressReplication(
+                        tunnel_endpoint_ip=self._core_service.router_id)
+                else:  # pmsi_tunnel_type == PMSI_TYPE_NO_TUNNEL_INFO
+                    tunnel_id = None
+                pattrs[BGP_ATTR_TYEP_PMSI_TUNNEL_ATTRIBUTE] = \
+                    BGPPathAttributePmsiTunnel(pmsi_flags=0,
+                                               tunnel_type=pmsi_tunnel_type,
+                                               tunnel_id=tunnel_id)
+
             # Set MPLS labels with the generated labels
             if gen_lbl and isinstance(nlri, EvpnMacIPAdvertisementNLRI):
                 nlri.mpls_labels = label_list[:2]
+            elif gen_lbl and isinstance(nlri, EvpnIpPrefixNLRI):
+                nlri.mpls_label = label_list[0]
 
         puid = self.VRF_PATH_CLASS.create_puid(
             vrf_conf.route_dist, nlri.prefix)

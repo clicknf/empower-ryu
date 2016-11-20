@@ -29,15 +29,21 @@ from ryu.services.protocols.bgp.api.base import EVPN_ETHERNET_TAG_ID
 from ryu.services.protocols.bgp.api.base import IP_ADDR
 from ryu.services.protocols.bgp.api.base import MAC_ADDR
 from ryu.services.protocols.bgp.api.base import NEXT_HOP
+from ryu.services.protocols.bgp.api.base import IP_PREFIX
+from ryu.services.protocols.bgp.api.base import GW_IP_ADDR
 from ryu.services.protocols.bgp.api.base import ROUTE_DISTINGUISHER
 from ryu.services.protocols.bgp.api.base import ROUTE_FAMILY
 from ryu.services.protocols.bgp.api.base import EVPN_VNI
 from ryu.services.protocols.bgp.api.base import TUNNEL_TYPE
+from ryu.services.protocols.bgp.api.base import PMSI_TUNNEL_TYPE
 from ryu.services.protocols.bgp.api.prefix import EVPN_MAC_IP_ADV_ROUTE
 from ryu.services.protocols.bgp.api.prefix import EVPN_MULTICAST_ETAG_ROUTE
+from ryu.services.protocols.bgp.api.prefix import EVPN_IP_PREFIX_ROUTE
 from ryu.services.protocols.bgp.api.prefix import TUNNEL_TYPE_VXLAN
 from ryu.services.protocols.bgp.api.prefix import TUNNEL_TYPE_NVGRE
-from ryu.services.protocols.bgp.operator import ssh
+from ryu.services.protocols.bgp.api.prefix import (
+    PMSI_TYPE_NO_TUNNEL_INFO,
+    PMSI_TYPE_INGRESS_REP)
 from ryu.services.protocols.bgp.rtconf.common import LOCAL_AS
 from ryu.services.protocols.bgp.rtconf.common import ROUTER_ID
 from ryu.services.protocols.bgp.rtconf.common import BGP_SERVER_PORT
@@ -60,6 +66,7 @@ from ryu.services.protocols.bgp.rtconf.base import CAP_FOUR_OCTET_AS_NUMBER
 from ryu.services.protocols.bgp.rtconf.base import MULTI_EXIT_DISC
 from ryu.services.protocols.bgp.rtconf.base import SITE_OF_ORIGINS
 from ryu.services.protocols.bgp.rtconf.neighbors import DEFAULT_CAP_MBGP_IPV4
+from ryu.services.protocols.bgp.rtconf.neighbors import DEFAULT_CAP_MBGP_IPV6
 from ryu.services.protocols.bgp.rtconf.neighbors import DEFAULT_CAP_MBGP_VPNV4
 from ryu.services.protocols.bgp.rtconf.neighbors import DEFAULT_CAP_MBGP_VPNV6
 from ryu.services.protocols.bgp.rtconf.neighbors import DEFAULT_CAP_MBGP_EVPN
@@ -157,9 +164,7 @@ class BGPSpeaker(object):
                  peer_down_handler=None,
                  peer_up_handler=None,
                  ssh_console=False,
-                 ssh_port=ssh.DEFAULT_SSH_PORT,
-                 ssh_host=ssh.DEFAULT_SSH_HOST,
-                 ssh_host_key=ssh.DEFAULT_SSH_HOST_KEY,
+                 ssh_port=None, ssh_host=None, ssh_host_key=None,
                  label_range=DEFAULT_LABEL_RANGE):
         """Create a new BGPSpeaker object with as_number and router_id to
         listen on bgp_server_port.
@@ -197,11 +202,14 @@ class BGPSpeaker(object):
         ``ssh_console`` specifies whether or not SSH CLI need to be started.
 
         ``ssh_port`` specifies the port number for SSH CLI server.
+        The default is bgp.operator.ssh.DEFAULT_SSH_PORT.
 
         ``ssh_host`` specifies the IP address for SSH CLI server.
+        The default is bgp.operator.ssh.DEFAULT_SSH_HOST.
 
         ``ssh_host_key`` specifies the path to the host key added to
         the keys list used by SSH CLI server.
+        The default is bgp.operator.ssh.DEFAULT_SSH_HOST_KEY.
 
         ``label_range`` specifies the range of MPLS labels generated
         automatically.
@@ -222,10 +230,13 @@ class BGPSpeaker(object):
         self._peer_down_handler = peer_down_handler
         self._peer_up_handler = peer_up_handler
         if ssh_console:
+            # Note: paramiko used in bgp.operator.ssh is the optional
+            # requirements, imports bgp.operator.ssh here.
+            from ryu.services.protocols.bgp.operator import ssh
             ssh_settings = {
-                ssh.SSH_PORT: ssh_port,
-                ssh.SSH_HOST: ssh_host,
-                ssh.SSH_HOST_KEY: ssh_host_key,
+                ssh.SSH_PORT: ssh_port or ssh.DEFAULT_SSH_PORT,
+                ssh.SSH_HOST: ssh_host or ssh.DEFAULT_SSH_HOST,
+                ssh.SSH_HOST_KEY: ssh_host_key or ssh.DEFAULT_SSH_HOST_KEY,
             }
             hub.spawn(ssh.SSH_CLI_CONTROLLER.start, **ssh_settings)
 
@@ -285,6 +296,7 @@ class BGPSpeaker(object):
 
     def neighbor_add(self, address, remote_as,
                      enable_ipv4=DEFAULT_CAP_MBGP_IPV4,
+                     enable_ipv6=DEFAULT_CAP_MBGP_IPV6,
                      enable_vpnv4=DEFAULT_CAP_MBGP_VPNV4,
                      enable_vpnv6=DEFAULT_CAP_MBGP_VPNV6,
                      enable_evpn=DEFAULT_CAP_MBGP_EVPN,
@@ -308,6 +320,9 @@ class BGPSpeaker(object):
 
         ``enable_ipv4`` enables IPv4 address family for this
         neighbor. The default is True.
+
+        ``enable_ipv6`` enables IPv6 address family for this
+        neighbor. The default is False.
 
         ``enable_vpnv4`` enables VPNv4 address family for this
         neighbor. The default is False.
@@ -367,23 +382,12 @@ class BGPSpeaker(object):
             CONNECT_MODE: connect_mode,
             CAP_ENHANCED_REFRESH: enable_enhanced_refresh,
             CAP_FOUR_OCTET_AS_NUMBER: enable_four_octet_as_number,
+            CAP_MBGP_IPV4: enable_ipv4,
+            CAP_MBGP_IPV6: enable_ipv6,
+            CAP_MBGP_VPNV4: enable_vpnv4,
+            CAP_MBGP_VPNV6: enable_vpnv6,
+            CAP_MBGP_EVPN: enable_evpn,
         }
-        # v6 advertisement is available with only v6 peering
-        if netaddr.valid_ipv4(address):
-            bgp_neighbor[CAP_MBGP_IPV4] = enable_ipv4
-            bgp_neighbor[CAP_MBGP_IPV6] = False
-            bgp_neighbor[CAP_MBGP_VPNV4] = enable_vpnv4
-            bgp_neighbor[CAP_MBGP_VPNV6] = enable_vpnv6
-            bgp_neighbor[CAP_MBGP_EVPN] = enable_evpn
-        elif netaddr.valid_ipv6(address):
-            bgp_neighbor[CAP_MBGP_IPV4] = False
-            bgp_neighbor[CAP_MBGP_IPV6] = True
-            bgp_neighbor[CAP_MBGP_VPNV4] = False
-            bgp_neighbor[CAP_MBGP_VPNV6] = False
-            bgp_neighbor[CAP_MBGP_EVPN] = enable_evpn
-        else:
-            # FIXME: should raise an exception
-            pass
 
         if multi_exit_disc:
             bgp_neighbor[MULTI_EXIT_DISC] = multi_exit_disc
@@ -533,12 +537,14 @@ class BGPSpeaker(object):
 
     def evpn_prefix_add(self, route_type, route_dist, esi=0,
                         ethernet_tag_id=None, mac_addr=None, ip_addr=None,
-                        vni=None, next_hop=None, tunnel_type=None):
+                        ip_prefix=None, gw_ip_addr=None, vni=None,
+                        next_hop=None, tunnel_type=None,
+                        pmsi_tunnel_type=None):
         """ This method adds a new EVPN route to be advertised.
 
         ``route_type`` specifies one of the EVPN route type name. The
-        supported route types are EVPN_MAC_IP_ADV_ROUTE and
-        EVPN_MULTICAST_ETAG_ROUTE.
+        supported route types are EVPN_MAC_IP_ADV_ROUTE,
+        EVPN_MULTICAST_ETAG_ROUTE and EVPN_IP_PREFIX_ROUTE.
 
         ``route_dist`` specifies a route distinguisher value.
 
@@ -551,6 +557,11 @@ class BGPSpeaker(object):
 
         ``ip_addr`` specifies an IPv4 or IPv6 address to advertise.
 
+        ``ip_prefix`` specifies an IPv4 or IPv6 prefix to advertise.
+
+        ``gw_ip_addr`` specifies an IPv4 or IPv6 address of
+         gateway to advertise.
+
         ``vni`` specifies an Virtual Network Identifier for VXLAN
         or Virtual Subnet Identifier for NVGRE.
         If tunnel_type is not 'vxlan' or 'nvgre', this field is ignored.
@@ -560,6 +571,11 @@ class BGPSpeaker(object):
         ``tunnel_type`` specifies the data plane encapsulation type
         to advertise. By the default, this encapsulation attribute is
         not advertised.
+
+        ```pmsi_tunnel_type`` specifies the type of the PMSI tunnel attribute
+         used to encode the multicast tunnel identifier.
+        This field is advertised only if route_type is
+        EVPN_MULTICAST_ETAG_ROUTE.
         """
         func_name = 'evpn_prefix.add_local'
 
@@ -592,13 +608,33 @@ class BGPSpeaker(object):
                 EVPN_ETHERNET_TAG_ID: ethernet_tag_id,
                 IP_ADDR: ip_addr,
             })
+
+            # Set PMSI Tunnel Attribute arguments
+            if pmsi_tunnel_type in [
+                    PMSI_TYPE_NO_TUNNEL_INFO,
+                    PMSI_TYPE_INGRESS_REP]:
+                kwargs[PMSI_TUNNEL_TYPE] = pmsi_tunnel_type
+            elif pmsi_tunnel_type is not None:
+                raise ValueError('Unsupported PMSI tunnel type: %s' %
+                                 pmsi_tunnel_type)
+        elif route_type == EVPN_IP_PREFIX_ROUTE:
+            kwargs.update({
+                EVPN_ESI: esi,
+                EVPN_ETHERNET_TAG_ID: ethernet_tag_id,
+                IP_PREFIX: ip_prefix,
+                GW_IP_ADDR: gw_ip_addr,
+            })
+            # Set tunnel type specific arguments
+            if tunnel_type in [TUNNEL_TYPE_VXLAN, TUNNEL_TYPE_NVGRE]:
+                kwargs[EVPN_VNI] = vni
         else:
             raise ValueError('Unsupported EVPN route type: %s' % route_type)
 
         call(func_name, **kwargs)
 
     def evpn_prefix_del(self, route_type, route_dist, esi=0,
-                        ethernet_tag_id=None, mac_addr=None, ip_addr=None):
+                        ethernet_tag_id=None, mac_addr=None, ip_addr=None,
+                        ip_prefix=None):
         """ This method deletes an advertised EVPN route.
 
         ``route_type`` specifies one of the EVPN route type name.
@@ -613,6 +649,8 @@ class BGPSpeaker(object):
         ``mac_addr`` specifies a MAC address to advertise.
 
         ``ip_addr`` specifies an IPv4 or IPv6 address to advertise.
+
+        ``ip_prefix`` specifies an IPv4 or IPv6 prefix to advertise.
         """
         func_name = 'evpn_prefix.delete_local'
 
@@ -632,6 +670,11 @@ class BGPSpeaker(object):
             kwargs.update({
                 EVPN_ETHERNET_TAG_ID: ethernet_tag_id,
                 IP_ADDR: ip_addr,
+            })
+        elif route_type == EVPN_IP_PREFIX_ROUTE:
+            kwargs.update({
+                EVPN_ETHERNET_TAG_ID: ethernet_tag_id,
+                IP_PREFIX: ip_prefix,
             })
         else:
             raise ValueError('Unsupported EVPN route type: %s' % route_type)

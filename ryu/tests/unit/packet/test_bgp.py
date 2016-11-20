@@ -16,12 +16,15 @@
 
 from __future__ import print_function
 
+import logging
 import os
 import sys
+
 import unittest
 from nose.tools import eq_
 from nose.tools import ok_
 
+from ryu.utils import binary_str
 from ryu.lib import pcaplib
 from ryu.lib.packet import packet
 from ryu.lib.packet import bgp
@@ -29,8 +32,17 @@ from ryu.lib.packet import afi
 from ryu.lib.packet import safi
 
 
+LOG = logging.getLogger(__name__)
+
 BGP4_PACKET_DATA_DIR = os.path.join(
     os.path.dirname(sys.modules[__name__].__file__), '../../packet_data/bgp4/')
+
+PMSI_TYPE_NO_TUNNEL_INFORMATION_PRESENT = (
+    bgp.BGPPathAttributePmsiTunnel.TYPE_NO_TUNNEL_INFORMATION_PRESENT
+)
+PMSI_TYPE_INGRESS_REPLICATION = (
+    bgp.BGPPathAttributePmsiTunnel.TYPE_INGRESS_REPLICATION
+)
 
 
 class Test_bgp(unittest.TestCase):
@@ -140,6 +152,31 @@ class Test_bgp(unittest.TestCase):
             bgp.BGPPathAttributeOriginatorId(value='10.1.1.1'),
             bgp.BGPPathAttributeClusterList(value=['1.1.1.1', '2.2.2.2']),
             bgp.BGPPathAttributeExtendedCommunities(communities=ecommunities),
+            bgp.BGPPathAttributePmsiTunnel(
+                pmsi_flags=1,
+                tunnel_type=PMSI_TYPE_NO_TUNNEL_INFORMATION_PRESENT,
+                label=b'\xFF\xFF\xFF'),
+            bgp.BGPPathAttributePmsiTunnel(
+                pmsi_flags=1,
+                tunnel_type=PMSI_TYPE_NO_TUNNEL_INFORMATION_PRESENT,
+                tunnel_id=None),
+            bgp.BGPPathAttributePmsiTunnel(
+                pmsi_flags=1,
+                tunnel_type=PMSI_TYPE_INGRESS_REPLICATION,
+                mpls_label=0xfffff,
+                tunnel_id=bgp.PmsiTunnelIdIngressReplication(
+                    tunnel_endpoint_ip="1.1.1.1")),
+            bgp.BGPPathAttributePmsiTunnel(
+                pmsi_flags=1,
+                tunnel_type=PMSI_TYPE_INGRESS_REPLICATION,
+                vni=0xffffff,
+                tunnel_id=bgp.PmsiTunnelIdIngressReplication(
+                    tunnel_endpoint_ip="aa:bb:cc::dd:ee:ff")),
+            bgp.BGPPathAttributePmsiTunnel(
+                pmsi_flags=1,
+                tunnel_type=2,
+                label=b'\xFF\xFF\xFF',
+                tunnel_id=bgp.PmsiTunnelIdUnknown(value=b'test')),
             bgp.BGPPathAttributeAs4Path(value=[[1000000], {1000001, 1002},
                                                [1003, 1000004]]),
             bgp.BGPPathAttributeAs4Aggregator(as_number=100040000,
@@ -209,10 +246,9 @@ class Test_bgp(unittest.TestCase):
     def test_parser(self):
         files = [
             'bgp4-open',
-            # commented out because
-            # 1. we don't support 32 bit AS numbers in AS_PATH
-            # 2. quagga always uses EXTENDED for AS_PATH
-            # 'bgp4-update',
+            'bgp4-update',
+            'bgp4-update_ipv6',
+            'bgp4-update_vpnv6',
             'bgp4-keepalive',
             'evpn_esi_arbitrary',
             'evpn_esi_lacp',
@@ -224,16 +260,22 @@ class Test_bgp(unittest.TestCase):
             'evpn_nlri_mac_ip_ad',
             'evpn_nlri_inc_multi_eth_tag',
             'evpn_nlri_eth_seg',
+            'evpn_nlri_ip_prefix',
         ]
 
         for f in files:
-            print('\n*** testing %s ...' % f)
+            LOG.debug('*** testing %s ...', f)
             for _, buf in pcaplib.Reader(
                     open(BGP4_PACKET_DATA_DIR + f + '.pcap', 'rb')):
+                # Checks if BGP message can be parsed as expected.
                 pkt = packet.Packet(buf)
-                print(pkt)
+                ok_(isinstance(pkt.protocols[-1], bgp.BGPMessage),
+                    'Failed to parse BGP message: %s' % pkt)
+
+                # Checks if BGP message can be serialized as expected.
                 pkt.serialize()
-                eq_(buf, pkt.data)
+                eq_(buf, pkt.data,
+                    "b'%s' != b'%s'" % (binary_str(buf), binary_str(pkt.data)))
 
     def test_json1(self):
         opt_param = [bgp.BGPOptParamCapabilityUnknown(cap_code=200,
@@ -304,6 +346,31 @@ class Test_bgp(unittest.TestCase):
                                            addr='192.0.2.99'),
             bgp.BGPPathAttributeCommunities(communities=communities),
             bgp.BGPPathAttributeExtendedCommunities(communities=ecommunities),
+            bgp.BGPPathAttributePmsiTunnel(
+                pmsi_flags=1,
+                tunnel_type=PMSI_TYPE_NO_TUNNEL_INFORMATION_PRESENT,
+                label=b'\xFF\xFF\xFF'),
+            bgp.BGPPathAttributePmsiTunnel(
+                pmsi_flags=1,
+                tunnel_type=PMSI_TYPE_NO_TUNNEL_INFORMATION_PRESENT,
+                tunnel_id=None),
+            bgp.BGPPathAttributePmsiTunnel(
+                pmsi_flags=1,
+                tunnel_type=PMSI_TYPE_INGRESS_REPLICATION,
+                mpls_label=0xfffff,
+                tunnel_id=bgp.PmsiTunnelIdIngressReplication(
+                    tunnel_endpoint_ip="1.1.1.1")),
+            bgp.BGPPathAttributePmsiTunnel(
+                pmsi_flags=1,
+                tunnel_type=PMSI_TYPE_INGRESS_REPLICATION,
+                vni=0xffffff,
+                tunnel_id=bgp.PmsiTunnelIdIngressReplication(
+                    tunnel_endpoint_ip="aa:bb:cc::dd:ee:ff")),
+            bgp.BGPPathAttributePmsiTunnel(
+                pmsi_flags=1,
+                tunnel_type=2,
+                label=b'\xFF\xFF\xFF',
+                tunnel_id=bgp.PmsiTunnelIdUnknown(value=b'test')),
             bgp.BGPPathAttributeAs4Path(value=[[1000000], {1000001, 1002},
                                                [1003, 1000004]]),
             bgp.BGPPathAttributeAs4Aggregator(as_number=100040000,

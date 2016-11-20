@@ -21,7 +21,7 @@ Installing Ryu is quite easy::
 If you prefer to install Ryu from the source code::
 
    % git clone git://github.com/osrg/ryu.git
-   % cd ryu; python ./setup.py install
+   % cd ryu; pip install .
 
 If you want to write your Ryu application, have a look at
 `Writing ryu application <http://ryu.readthedocs.io/en/latest/writing_ryu_app.html>`_ document.
@@ -35,16 +35,15 @@ Optional Requirements
 
 Some functionalities of ryu requires extra packages:
 
-- OF-Config requires lxml
+- OF-Config requires lxml and ncclient
 - NETCONF requires paramiko
-- BGP speaker (ssh console) requires paramiko
-- OVSDB support requires ovs  (Note: python 3.4 requires ovs>=2.6.0.dev0)
+- BGP speaker (SSH console) requires paramiko
 
 If you want to use the functionalities, please install requirements::
 
-    % pip install lxml
-    % pip install paramiko
-    % pip install ovs
+    % pip install -r tools/optional-requires
+
+Please refer to tools/optional-requires for details.
 
 
 Support

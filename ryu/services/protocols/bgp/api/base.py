@@ -47,9 +47,12 @@ EVPN_ESI = 'esi'
 EVPN_ETHERNET_TAG_ID = 'ethernet_tag_id'
 MAC_ADDR = 'mac_addr'
 IP_ADDR = 'ip_addr'
+IP_PREFIX = 'ip_prefix'
+GW_IP_ADDR = 'gw_ip_addr'
 MPLS_LABELS = 'mpls_labels'
 TUNNEL_TYPE = 'tunnel_type'
 EVPN_VNI = 'vni'
+PMSI_TUNNEL_TYPE = 'pmsi_tunnel_type'
 
 # API call registry
 _CALL_REGISTRY = {}
