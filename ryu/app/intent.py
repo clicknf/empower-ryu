@@ -18,19 +18,108 @@ from ryu.controller import ofp_event
 from ryu.controller.handler import MAIN_DISPATCHER
 from ryu.controller.handler import set_ev_cls
 from ryu.lib.mac import haddr_to_bin
-from ryu.ofproto import ofproto_v1_0
 from ryu.lib.packet import packet
 from ryu.lib.packet import ethernet
 from ryu.lib.packet import ether_types
+from ryu.lib.dpid import dpid_to_str
 from ryu.app.rest_intent import IntentController
-from ryu.topology.event import EventSwitchEnter
-from ryu.topology.api import get_switch, get_link
+from ryu.topology.api import get_switch, get_link, get_host
+from ryu.ofproto import ofproto_v1_0
 from ryu.ofproto.ofproto_v1_0_parser import OFPMatch
 from collections import OrderedDict
+from ryu.app.wsgi import WSGIApplication
+from threading import Lock
+import traceback
 
 OFP_LW_PRIORITY = 100
 OFP_RULE_PRIORITY = 200
 BASE_HEX = 16
+
+
+class LSwitch:
+    def __init__(self, datapath):
+
+        self._dp = datapath
+        self._ofproto = datapath.ofproto
+        self._ofproto_parser = self._dp.ofproto_parser
+        self._hosts = {}
+
+    def get_dp(self):
+        return self._dp
+
+    def get_dp_id(self):
+        return self._dp.id
+
+    # update or learn a new host
+    def update_host(self, mac, port):
+
+        if mac in self._hosts and self._hosts[mac] != port:
+            self.delete_host_rules(mac)
+
+        self._hosts[mac] = port
+
+    def get_host_port(self, mac):
+        return self._hosts.get(mac)
+
+    def delete_host(self, mac):
+
+        if mac in self._hosts:
+            del self._hosts[mac]
+
+    def delete_host_rules(self, mac):
+
+        match = self._ofproto_parser.OFPMatch(dl_src=mac)
+        mod = self._ofproto_parser.OFPFlowMod(
+            datapath=self._dp,
+            match=match,
+            cookie=0,
+            command=self._ofproto.OFPFC_DELETE)
+
+        self._dp.send_msg(mod)
+
+        match = self._ofproto_parser.OFPMatch(dl_dst=mac)
+        mod = self._ofproto_parser.OFPFlowMod(
+            datapath=self._dp,
+            match=match,
+            cookie=0,
+            command=self._ofproto.OFPFC_DELETE)
+
+        self._dp.send_msg(mod)
+
+    def packet_out(self, msg, out_port):
+
+        actions = [self._dp.ofproto_parser.OFPActionOutput(out_port)]
+        data = None
+
+        if msg.buffer_id == self._ofproto.OFP_NO_BUFFER:
+            data = msg.data
+
+        out = self._dp.ofproto_parser.OFPPacketOut(
+            datapath=self._dp, buffer_id=msg.buffer_id, in_port=msg.in_port,
+            actions=actions, data=data)
+
+        self._dp.send_msg(out)
+
+    def add_out_rule(self, src, dst, in_port, out_port, priority=OFP_LW_PRIORITY):
+
+        actions = [self._dp.ofproto_parser.OFPActionOutput(out_port)]
+        match = self._ofproto_parser.OFPMatch(
+            dl_src=haddr_to_bin(src),
+            dl_dst=haddr_to_bin(dst),
+            in_port=in_port)
+
+        mod = self._ofproto_parser.OFPFlowMod(
+            datapath=self._dp,
+            match=match,
+            cookie=0,
+            command=self._ofproto.OFPFC_ADD,
+            idle_timeout=0,
+            hard_timeout=0,
+            priority=priority,
+            flags=self._ofproto.OFPFF_SEND_FLOW_REM,
+            actions=actions)
+
+        self._dp.send_msg(mod)
 
 
 def dijkstra(vertices, edges, source):
@@ -66,27 +155,28 @@ def dijkstra(vertices, edges, source):
                 dist[v['dst']] = alt
                 prev[v['dst']] = [u, v['port']]
 
-    return (dist, prev)
+    return dist, prev
 
 
 class Intent(app_manager.RyuApp):
 
     OFP_VERSIONS = [ofproto_v1_0.OFP_VERSION]
 
+    _CONTEXTS = {'wsgi': WSGIApplication}
+
     def __init__(self, *args, **kwargs):
 
         super(Intent, self).__init__(*args, **kwargs)
 
-        self.mac_to_port = {}
         self.rules = {}
         self.lvnf_info = OrderedDict()
+        self.LSwitches = {}
+        self.mutex = Lock()
 
         wsgi = kwargs['wsgi']
         wsgi.register(IntentController, {'intent_app': self})
 
-    def _compute_spanning_tree(self, ttp_dpid):
-        """Compute spanning tree rooted on ttp_dpid"""
-
+    def _get_nexthop_port(self, src_dpid, dst_dpid):
         sws_list = get_switch(self, None)
         sws = [switch.dp.id for switch in sws_list]
 
@@ -98,14 +188,17 @@ class Intent(app_manager.RyuApp):
                           'dst': link.dst.dpid,
                           'port': link.dst.port_no})
 
-        dist, prev = dijkstra(sws, links, ttp_dpid)
+        _, prev = dijkstra(sws, links, dst_dpid)
 
-        return (dist, prev)
+        if prev[src_dpid] is None:
+            return None
+        else:
+            return prev[src_dpid][1]
 
     def _compile_rule(self, rule):
         """Compile rule."""
 
-        _, preds = self._compute_spanning_tree(rule.ttp_dpid)
+        _, preds = self._get_nexthop_port()
 
         for pred in preds:
 
@@ -135,76 +228,93 @@ class Intent(app_manager.RyuApp):
                 mod = datapath.ofproto_parser.OFPFlowMod(
                     datapath=datapath, match=match, cookie=0,
                     command=ofproto.OFPFC_ADD,
-                    priority=200, actions=actions)
+                    priority=OFP_RULE_PRIORITY, actions=actions)
 
                 rule.flow_mods.append(mod)
+                # datapath.send_msg(mod)
 
-    def update_flow_mod(self, datapath, rule, match, actions):
+    def _find_host_dpid(self, mac):
 
-        ofproto = datapath.ofproto
-        mod = datapath.ofproto_parser.OFPFlowMod(
-            datapath=datapath, match=match, cookie=0,
-            command=ofproto.OFPFC_ADD,
-            priority=200, actions=actions)
+        dpid = None
+        dp_host_port = None
 
-        rule.flow_mods.append(mod)
+        for sw_id in self.LSwitches:
+
+            hosts = get_host(self, sw_id)
+            target_host = [host for host in hosts
+                           if host.mac == mac.lower()]
+
+            if len(target_host) > 0:
+
+                # be sure that Ryu report this host on only one dp and port
+                assert dpid is None
+                assert dp_host_port is None
+                assert len(target_host) == 1
+                target_host = target_host[0]
+                dpid = sw_id
+                dp_host_port = target_host.port.port_no
+
+        return dpid, dp_host_port
 
     def update_rule(self, uuid, rule):
         """Update VNF Link."""
 
-        self.remove_rule(uuid)
-        self.add_rule(rule)
+        if not rule.equal_to(self.rules[uuid]):
+
+            self.remove_rule(uuid)
+            self.add_rule(rule)
 
     def add_rule(self, rule):
         """Add VNF link."""
 
-        self._compile_rule(rule)
-        self.rules[rule.uuid] = rule
+        try:
+
+            self.mutex.acquire()
+
+            self.logger.info('adding rule: %s' % rule.uuid)
+            self.logger.info(rule.to_jsondict())
+
+            mac = rule.match['dl_dst']
+
+            # delete all rules and unlearn host
+            for switch in self.LSwitches.values():
+                # fixme, why dst?
+                switch.delete_host_rules(mac)
+                switch.delete_host(mac)
+
+            #self._compile_rule(rule)
+
+            self.rules[rule.uuid] = rule
+
+        except Exception:
+            traceback.print_exc()
+            raise
+
+        finally:
+            self.mutex.release()
 
     def remove_rule(self, uuid=None):
         """Remove VNF link."""
 
-        if uuid:
-            self._remove_reverse_path(uuid)
-            del self.rules[uuid]
-            return
+        try:
 
-        for uuid in list(self.rules):
-            self._remove_reverse_path(uuid)
-            del self.rules[uuid]
+            self.mutex.acquire()
+            print('removing rule: %s' % uuid)
 
-    def _remove_reverse_path(self, uuid):
-        """Remove deployed rules."""
+            if uuid:
+                del self.rules[uuid]
+            else:
+                for uuid in list(self.rules):
+                    del self.rules[uuid]
 
-        rule = self.rules[uuid]
+        except Exception:
+            traceback.print_exc()
+            raise
 
-        for mod in rule.flow_mods:
+        finally:
+            self.mutex.release()
 
-            datapath = mod.datapath
-            ofproto = datapath.ofproto
-            match = mod.match
-
-            mod = datapath.ofproto_parser.OFPFlowMod(
-                datapath=datapath, match=match, cookie=0,
-                command=ofproto.OFPFC_DELETE_STRICT,
-                priority=OFP_RULE_PRIORITY)
-
-            datapath.send_msg(mod)
-
-    def add_flow(self, datapath, in_port, dst, actions):
-        ofproto = datapath.ofproto
-
-        match = datapath.ofproto_parser.OFPMatch(
-            in_port=in_port, dl_dst=haddr_to_bin(dst))
-
-        mod = datapath.ofproto_parser.OFPFlowMod(
-            datapath=datapath, match=match, cookie=0,
-            command=ofproto.OFPFC_ADD, idle_timeout=0, hard_timeout=0,
-            priority=100,
-            flags=ofproto.OFPFF_SEND_FLOW_REM, actions=actions)
-
-        datapath.send_msg(mod)
-
+    @set_ev_cls(ofp_event.EventOFPPacketIn, MAIN_DISPATCHER)
     @set_ev_cls(ofp_event.EventOFPPacketIn, MAIN_DISPATCHER)
     def _packet_in_handler(self, ev):
 
@@ -223,40 +333,100 @@ class Intent(app_manager.RyuApp):
             # ignore IPV6 Packets
             return
 
-        dst = eth.dst
-        src = eth.src
+        dst = eth.dst.upper()
+        src = eth.src.upper()
 
-        if int(dst.split(':')[0], BASE_HEX) & 1 and dst != "ff:ff:ff:ff:ff:ff":
+        if int(dst.split(':')[0], BASE_HEX) & 1 \
+                and dst != "FF:FF:FF:FF:FF:FF" \
+                and dst != "00:00:00:00:00:00":
             # ignore multicast packets, but allow broadcast packets
             return
 
-        dpid = datapath.id
-        self.mac_to_port.setdefault(dpid, {})
+        try:
 
-        self.logger.info("packet in %s %s %s %s", dpid, src, dst, msg.in_port)
+            self.mutex.acquire()
 
-        # learn a mac address to avoid FLOOD next time.
-        self.mac_to_port[dpid][src] = msg.in_port
+            dpid = datapath.id
+            dpid_str = dpid_to_str(dpid)
 
-        if dst in self.mac_to_port[dpid]:
-            out_port = self.mac_to_port[dpid][dst]
-        else:
-            out_port = ofproto.OFPP_FLOOD
+            # fixme, a switch may reconnect
+            if dpid in self.LSwitches:
 
-        actions = [datapath.ofproto_parser.OFPActionOutput(out_port)]
+                switch = self.LSwitches[dpid]
 
-        # install a flow to avoid packet_in next time
-        if out_port != ofproto.OFPP_FLOOD:
-            self.add_flow(datapath, msg.in_port, dst, actions)
+                if not switch.get_dp().is_active:
 
-        data = None
-        if msg.buffer_id == ofproto.OFP_NO_BUFFER:
-            data = msg.data
+                    # switch has restarted
+                    del self.LSwitches[dpid]
+                    switch = LSwitch(datapath)
+                    self.LSwitches[dpid] = switch
 
-        out = datapath.ofproto_parser.OFPPacketOut(
-            datapath=datapath, buffer_id=msg.buffer_id, in_port=msg.in_port,
-            actions=actions, data=data)
-        datapath.send_msg(out)
+            else:
+                switch = LSwitch(datapath)
+                self.LSwitches[dpid] = switch
+
+            # for both src and dst check whether these are controlled by Empower
+            empower_src_list = [rule for rule in self.rules.values()
+                                if rule.match['dl_dst'] == src]
+            assert len(empower_src_list) <= 1
+            empower_src = None
+            if len(empower_src_list) == 1:
+                empower_src = empower_src_list[0]
+
+            empower_dst_list = [rule for rule in self.rules.values()
+                                if rule.match['dl_dst'] == dst]
+            assert len(empower_dst_list) <= 1
+            empower_dst = None
+            if len(empower_dst_list) == 1:
+                empower_dst = empower_dst_list[0]
+
+            # in case both src and dst are unknown to Empower, proceed with
+            # regular learning switch
+            if empower_src is None and empower_dst is None:
+
+                # learn a mac address to avoid FLOOD next time.
+                switch.update_host(src, msg.in_port)
+
+                out_port = switch.get_host_port(dst)
+
+                if out_port is None:
+                    switch.packet_out(msg, ofproto.OFPP_FLOOD)
+                else:
+                    switch.add_out_rule(src, dst, msg.in_port, out_port)
+                    switch.packet_out(msg, out_port)
+
+            else:
+
+                # either src or dst are Empower controlled,
+                target_dpid, target_port = None, None
+
+                if empower_dst is None:
+                    target_dpid, target_port = self._find_host_dpid(dst)
+
+                if empower_dst is not None:
+                    target_dpid = empower_dst.ttp_dpid
+                    target_port = empower_dst.ttp_port
+
+                if target_dpid is None:
+
+                    switch.packet_out(msg, ofproto.OFPP_FLOOD)
+                    return
+
+                nexthop_port = self._get_nexthop_port(switch.get_dp_id(),
+                                                      target_dpid)
+
+                if nexthop_port is None:
+                    nexthop_port = target_port
+
+                switch.add_out_rule(src, dst, msg.in_port, nexthop_port,
+                                    priority=OFP_RULE_PRIORITY)
+                switch.packet_out(msg, nexthop_port)
+
+        except Exception:
+            traceback.print_exc()
+            raise
+        finally:
+            self.mutex.release()
 
     @set_ev_cls(ofp_event.EventOFPPortStatus, MAIN_DISPATCHER)
     def _port_status_handler(self, ev):

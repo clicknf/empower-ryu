@@ -80,6 +80,14 @@ class IntentRule(object):
 
         return {'IntentRule': out}
 
+    def equal_to(self, intent_rule):
+        if self.ttp_dpid == intent_rule.ttp_dpid \
+            and self.ttp_port == intent_rule.ttp_port \
+                and self.match == intent_rule.match:
+            return True
+        else:
+            return False
+
 
 class IterEncoder(json.JSONEncoder):
     """Encode iterable objects as lists."""
@@ -171,16 +179,23 @@ class IntentController(ControllerBase):
 
         try:
 
-            body = json.loads(req.body)
+            if type(req.body) == bytes:
+                body_str = str(req.body, 'utf-8')
+            else:
+                body_str = req.body
+
+            body = json.loads(body_str)
             keys = set(body.keys())
 
             if keys not in VALID:
                 return Response(status=400)
 
             uuid = UUID(kwargs['uuid'])
+
             if uuid not in self.intent_app.rules:
 
-                raise KeyError("Unable to find %s", uuid)
+                rule = IntentRule(uuid, body)
+                self.intent_app.add_rule(rule)
 
             rule = IntentRule(uuid, body)
             self.intent_app.update_rule(uuid, rule)
@@ -192,12 +207,20 @@ class IntentController(ControllerBase):
         except ValueError:
             return Response(status=400)
 
+    # /intent/poa
+    # version, host, dpid, port
+
     @route('intent', '/intent/rules', methods=['POST'])
     def add_rule(self, req, **kwargs):
 
         try:
 
-            body = json.loads(req.body)
+            if type(req.body) == bytes:
+                body_str = str(req.body, 'utf-8')
+            else:
+                body_str = req.body
+
+            body = json.loads(body_str)
             keys = set(body.keys())
 
             if keys not in VALID:
@@ -209,6 +232,20 @@ class IntentController(ControllerBase):
             headers = {'Location': '/intent/rules/%s' % rule.uuid}
 
             return Response(status=201, headers=headers)
+
+        except KeyError:
+            return Response(status=404)
+
+        except ValueError:
+            return Response(status=400)
+
+    @route('intent', '/ls/rules', methods=['GET'])
+    def get_ls_rules(self, req, **kwargs):
+
+        try:
+            sorted_rules = self.intent_app.rules_str
+            sorted_rules.sort()
+            return Response(body=json.dumps('<br>'.join(sorted_rules)))
 
         except KeyError:
             return Response(status=404)
