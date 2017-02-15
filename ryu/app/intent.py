@@ -100,7 +100,8 @@ class LSwitch:
 
         self._dp.send_msg(out)
 
-    def add_out_rule(self, src, dst, in_port, out_port, priority=OFP_LW_PRIORITY):
+    def add_out_rule(self, src, dst, in_port, out_port,
+                     priority=OFP_LW_PRIORITY):
 
         actions = [self._dp.ofproto_parser.OFPActionOutput(out_port)]
         match = self._ofproto_parser.OFPMatch(
@@ -274,7 +275,7 @@ class Intent(app_manager.RyuApp):
             self.logger.info('adding rule: %s' % rule.uuid)
             self.logger.info(rule.to_jsondict())
 
-            mac = rule.match['dl_dst']
+            mac = rule.hwaddr
 
             # delete all rules and unlearn host
             for switch in self.LSwitches.values():

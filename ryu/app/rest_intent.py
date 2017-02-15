@@ -25,11 +25,6 @@ from ryu.ofproto.ofproto_v1_0_parser import OFPFlowMod
 from ryu.lib import dpid as dpid_lib
 
 
-VALID = [set(['version', 'ttp_dpid', 'ttp_port', 'match']),
-         set(['version', 'stp_dpid', 'stp_port', 'match',
-              'ttp_dpid', 'ttp_port'])]
-
-
 def empower_to_dpid(mac):
     """Convert from empower format to dpid."""
 
@@ -62,10 +57,8 @@ class IntentRule(object):
         self.stp_dpid = None
         self.stp_port = None
         self.flow_mods = []
-
-        if 'stp_dpid' in rule:
-            self.stp_dpid = empower_to_dpid(rule['stp_dpid'])
-            self.stp_port = int(rule['stp_port'])
+        self.stp_dpid = empower_to_dpid(rule['stp_dpid'])
+        self.stp_port = int(rule['stp_port'])
 
     def to_jsondict(self):
         """Return JSON representation of this object."""
@@ -80,13 +73,37 @@ class IntentRule(object):
 
         return {'IntentRule': out}
 
-    def equal_to(self, intent_rule):
-        if self.ttp_dpid == intent_rule.ttp_dpid \
-            and self.ttp_port == intent_rule.ttp_port \
-                and self.match == intent_rule.match:
-            return True
-        else:
-            return False
+    def __eq__(self, other):
+
+        return self.ttp_dpid == other.ttp_dpid and \
+               self.ttp_port == other.ttp_port and \
+               self.match == other.match
+
+
+class IntentPOA(object):
+
+    def __init__(self, uuid, poa):
+
+        self.uuid = uuid
+        self.hwaddr = empower_to_dpid(poa['hwaddr'])
+        self.dpid = empower_to_dpid(poa['dpid'])
+        self.port = int(poa['port'])
+
+    def to_jsondict(self):
+        """Return JSON representation of this object."""
+
+        out = {'dpid': dpid_to_empower(self.dpid),
+               'port': self.port,
+               'uuid': self.uuid,
+               'hwaddr': dpid_to_empower(self.hwaddr)}
+
+        return {'IntentPOA': out}
+
+    def __eq__(self, other):
+
+        return self.hwaddr == other.hwaddr and \
+               self.dpid == other.dpid and \
+               self.port == other.port
 
 
 class IterEncoder(json.JSONEncoder):
@@ -114,6 +131,9 @@ class IntentEncoder(IterEncoder):
         if isinstance(obj, IntentRule):
             ret = obj.to_jsondict()
             return ret['IntentRule']
+        if isinstance(obj, IntentPOA):
+            ret = obj.to_jsondict()
+            return ret['IntentPOA']
         return super(IntentEncoder, self).default(obj)
 
 
@@ -123,124 +143,95 @@ class IntentController(ControllerBase):
         super(IntentController, self).__init__(req, link, data, **config)
         self.intent_app = data['intent_app']
 
-    @route('intent', '/intent/rules', methods=['GET'])
-    def get_rules(self, req, **kwargs):
-
-        body = json.dumps(self.intent_app.rules.values(), cls=IntentEncoder)
-        return Response(content_type='application/json', body=body)
-
-    @route('intent', '/intent/rules/{uuid}', methods=['GET'])
-    def get_rule(self, req, **kwargs):
+    @route('intent', '/intent/poa', methods=['GET'])
+    def get_poa(self, req, **kwargs):
 
         try:
-
-            uuid = UUID(kwargs['uuid'])
-            body = json.dumps(self.intent_app.rules[uuid],
-                              cls=IntentEncoder)
+            body = \
+                json.dumps(self.intent_app.rules.values(), cls=IntentEncoder)
             return Response(content_type='application/json', body=body)
-
         except KeyError:
             return Response(status=404)
-
         except ValueError:
             return Response(status=400)
 
-    @route('intent', '/intent/rules', methods=['DELETE'])
-    def delete_rules(self, req, **kwargs):
+    @route('intent', '/intent/poa/{uuid}', methods=['GET'])
+    def get_poa(self, req, **kwargs):
 
         try:
+            uuid = UUID(kwargs['uuid'])
+            body = json.dumps(self.intent_app.rules[uuid], cls=IntentEncoder)
+            return Response(content_type='application/json', body=body)
+        except KeyError:
+            return Response(status=404)
+        except ValueError:
+            return Response(status=400)
 
+    @route('intent', '/intent/poa', methods=['DELETE'])
+    def delete_poa(self, req, **kwargs):
+
+        try:
             self.intent_app.remove_rule(None)
             return Response(status=204)
-
         except KeyError:
             return Response(status=404)
-
         except ValueError:
             return Response(status=400)
 
-    @route('intent', '/intent/rules/{uuid}', methods=['DELETE'])
-    def delete_rule(self, req, **kwargs):
+    @route('intent', '/intent/poa/{uuid}', methods=['DELETE'])
+    def delete_poa(self, req, **kwargs):
 
         try:
-
             uuid = UUID(kwargs['uuid'])
             self.intent_app.remove_rule(uuid)
             return Response(status=204)
-
         except KeyError:
             return Response(status=404)
-
         except ValueError:
             return Response(status=400)
 
-    @route('intent', '/intent/rules/{uuid}', methods=['PUT'])
-    def update_rule(self, req, **kwargs):
+    @route('intent', '/intent/poa/{uuid}', methods=['PUT'])
+    def update_poa(self, req, **kwargs):
 
         try:
 
-            if type(req.body) == bytes:
-                body_str = str(req.body, 'utf-8')
-            else:
-                body_str = req.body
-
-            body = json.loads(body_str)
-            keys = set(body.keys())
-
-            if keys not in VALID:
-                return Response(status=400)
-
+            body = json.loads(req.body)
             uuid = UUID(kwargs['uuid'])
 
             if uuid not in self.intent_app.rules:
+                poa = IntentPOA(uuid, body)
+                self.intent_app.add_rule(poa)
+                return Response(status=201)
 
-                rule = IntentRule(uuid, body)
-                self.intent_app.add_rule(rule)
-
-            rule = IntentRule(uuid, body)
-            self.intent_app.update_rule(uuid, rule)
+            poa = IntentPOA(uuid, body)
+            self.intent_app.update_rule(uuid, poa)
             return Response(status=204)
 
         except KeyError:
             return Response(status=404)
-
         except ValueError:
             return Response(status=400)
 
-    # /intent/poa
-    # version, host, dpid, port
-
-    @route('intent', '/intent/rules', methods=['POST'])
-    def add_rule(self, req, **kwargs):
+    @route('intent', '/intent/poa', methods=['POST'])
+    def add_poa(self, req, **kwargs):
 
         try:
 
-            if type(req.body) == bytes:
-                body_str = str(req.body, 'utf-8')
-            else:
-                body_str = req.body
+            body = json.loads(req.body)
+            poa = IntentPOA(uuid4(), body)
 
-            body = json.loads(body_str)
-            keys = set(body.keys())
-
-            if keys not in VALID:
-                return Response(status=400)
-
-            rule = IntentRule(uuid4(), body)
-
-            self.intent_app.add_rule(rule)
-            headers = {'Location': '/intent/rules/%s' % rule.uuid}
+            self.intent_app.add_rule(poa)
+            headers = {'Location': '/intent/poa/%s' % poa.uuid}
 
             return Response(status=201, headers=headers)
 
         except KeyError:
             return Response(status=404)
-
         except ValueError:
             return Response(status=400)
 
     @route('intent', '/ls/rules', methods=['GET'])
-    def get_ls_rules(self, req, **kwargs):
+    def get_ls_poa(self, req, **kwargs):
 
         try:
             sorted_rules = self.intent_app.rules_str
