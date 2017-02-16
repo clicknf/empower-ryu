@@ -21,8 +21,6 @@ from ryu.lib.mac import haddr_to_bin
 from ryu.lib.packet import packet
 from ryu.lib.packet import ethernet
 from ryu.lib.packet import ether_types
-from ryu.lib.dpid import dpid_to_str
-from ryu.app.rest_intent import IntentController
 from ryu.topology.api import get_switch, get_link, get_host
 from ryu.ofproto import ofproto_v1_0
 from ryu.ofproto.ofproto_v1_0_parser import OFPMatch
@@ -30,6 +28,9 @@ from collections import OrderedDict
 from ryu.app.wsgi import WSGIApplication
 from threading import Lock
 import traceback
+
+from ryu.app.rest_intent import IntentController
+from ryu.app.rest_intent import dpid_to_empower
 
 OFP_LW_PRIORITY = 100
 OFP_RULE_PRIORITY = 200
@@ -348,7 +349,6 @@ class Intent(app_manager.RyuApp):
             self.mutex.acquire()
 
             dpid = datapath.id
-            dpid_str = dpid_to_str(dpid)
 
             # fixme, a switch may reconnect
             if dpid in self.LSwitches:
@@ -368,14 +368,14 @@ class Intent(app_manager.RyuApp):
 
             # for both src and dst check whether these are controlled by Empower
             empower_src_list = [rule for rule in self.rules.values()
-                                if rule.match['dl_dst'] == src]
+                                if rule.hwaddr == src]
             assert len(empower_src_list) <= 1
             empower_src = None
             if len(empower_src_list) == 1:
                 empower_src = empower_src_list[0]
 
             empower_dst_list = [rule for rule in self.rules.values()
-                                if rule.match['dl_dst'] == dst]
+                                if rule.hwaddr == dst]
             assert len(empower_dst_list) <= 1
             empower_dst = None
             if len(empower_dst_list) == 1:
@@ -405,8 +405,8 @@ class Intent(app_manager.RyuApp):
                     target_dpid, target_port = self._find_host_dpid(dst)
 
                 if empower_dst is not None:
-                    target_dpid = empower_dst.ttp_dpid
-                    target_port = empower_dst.ttp_port
+                    target_dpid = empower_dst.dpid
+                    target_port = empower_dst.port
 
                 if target_dpid is None:
 

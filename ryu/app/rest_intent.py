@@ -85,7 +85,7 @@ class IntentPOA(object):
     def __init__(self, uuid, poa):
 
         self.uuid = uuid
-        self.hwaddr = empower_to_dpid(poa['hwaddr'])
+        self.hwaddr = poa['hwaddr']
         self.dpid = empower_to_dpid(poa['dpid'])
         self.port = int(poa['port'])
 
@@ -95,7 +95,7 @@ class IntentPOA(object):
         out = {'dpid': dpid_to_empower(self.dpid),
                'port': self.port,
                'uuid': self.uuid,
-               'hwaddr': dpid_to_empower(self.hwaddr)}
+               'hwaddr': self.hwaddr}
 
         return {'IntentPOA': out}
 
@@ -195,7 +195,7 @@ class IntentController(ControllerBase):
 
         try:
 
-            body = json.loads(req.body)
+            body = json.loads(str(req.body, 'utf-8'))
             uuid = UUID(kwargs['uuid'])
 
             if uuid not in self.intent_app.rules:
@@ -217,7 +217,7 @@ class IntentController(ControllerBase):
 
         try:
 
-            body = json.loads(req.body)
+            body = json.loads(str(req.body, 'utf-8'))
             poa = IntentPOA(uuid4(), body)
 
             self.intent_app.add_rule(poa)
