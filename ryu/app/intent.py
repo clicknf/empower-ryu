@@ -261,8 +261,7 @@ class Intent(app_manager.RyuApp):
     def update_rule(self, uuid, rule):
         """Update VNF Link."""
 
-        if not rule.equal_to(self.rules[uuid]):
-
+        if rule != self.rules[uuid]:
             self.remove_rule(uuid)
             self.add_rule(rule)
 
