@@ -279,7 +279,7 @@ class Intent(app_manager.RyuApp):
 
             # delete all rules and unlearn host
             for switch in self.LSwitches.values():
-                # fixme, why dst?
+
                 switch.delete_host_rules(mac)
                 switch.delete_host(mac)
 
@@ -300,11 +300,12 @@ class Intent(app_manager.RyuApp):
         try:
 
             self.mutex.acquire()
-            print('removing rule: %s' % uuid)
 
             if uuid:
+                self.logger.info('removing rule: %s' % uuid)
                 del self.rules[uuid]
             else:
+                self.logger.info('removing all rules')
                 for uuid in list(self.rules):
                     del self.rules[uuid]
 

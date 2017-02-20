@@ -144,7 +144,7 @@ class IntentController(ControllerBase):
         self.intent_app = data['intent_app']
 
     @route('intent', '/intent/poa', methods=['GET'])
-    def get_poa(self, req, **kwargs):
+    def get_poa_all(self, req, **kwargs):
 
         try:
             body = \
@@ -168,7 +168,7 @@ class IntentController(ControllerBase):
             return Response(status=400)
 
     @route('intent', '/intent/poa', methods=['DELETE'])
-    def delete_poa(self, req, **kwargs):
+    def delete_poa_all(self, req, **kwargs):
 
         try:
             self.intent_app.remove_rule(None)
