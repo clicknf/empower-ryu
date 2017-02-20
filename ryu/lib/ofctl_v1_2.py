@@ -28,56 +28,14 @@ LOG = logging.getLogger('ryu.lib.ofctl_v1_2')
 DEFAULT_TIMEOUT = 1.0
 
 UTIL = ofctl_utils.OFCtlUtil(ofproto_v1_2)
+str_to_int = ofctl_utils.str_to_int
 
 
 def to_action(dp, dic):
     ofp = dp.ofproto
     parser = dp.ofproto_parser
-
     action_type = dic.get('type')
-    if action_type == 'OUTPUT':
-        out_port = UTIL.ofp_port_from_user(dic.get('port', ofp.OFPP_ANY))
-        max_len = UTIL.ofp_cml_from_user(dic.get('max_len', ofp.OFPCML_MAX))
-        result = parser.OFPActionOutput(out_port, max_len)
-    elif action_type == 'COPY_TTL_OUT':
-        result = parser.OFPActionCopyTtlOut()
-    elif action_type == 'COPY_TTL_IN':
-        result = parser.OFPActionCopyTtlIn()
-    elif action_type == 'SET_MPLS_TTL':
-        mpls_ttl = int(dic.get('mpls_ttl'))
-        result = parser.OFPActionSetMplsTtl(mpls_ttl)
-    elif action_type == 'DEC_MPLS_TTL':
-        result = parser.OFPActionDecMplsTtl()
-    elif action_type == 'PUSH_VLAN':
-        ethertype = int(dic.get('ethertype'))
-        result = parser.OFPActionPushVlan(ethertype)
-    elif action_type == 'POP_VLAN':
-        result = parser.OFPActionPopVlan()
-    elif action_type == 'PUSH_MPLS':
-        ethertype = int(dic.get('ethertype'))
-        result = parser.OFPActionPushMpls(ethertype)
-    elif action_type == 'POP_MPLS':
-        ethertype = int(dic.get('ethertype'))
-        result = parser.OFPActionPopMpls(ethertype)
-    elif action_type == 'SET_QUEUE':
-        queue_id = UTIL.ofp_queue_from_user(dic.get('queue_id'))
-        result = parser.OFPActionSetQueue(queue_id)
-    elif action_type == 'GROUP':
-        group_id = UTIL.ofp_group_from_user(dic.get('group_id'))
-        result = parser.OFPActionGroup(group_id)
-    elif action_type == 'SET_NW_TTL':
-        nw_ttl = int(dic.get('nw_ttl'))
-        result = parser.OFPActionSetNwTtl(nw_ttl)
-    elif action_type == 'DEC_NW_TTL':
-        result = parser.OFPActionDecNwTtl()
-    elif action_type == 'SET_FIELD':
-        field = dic.get('field')
-        value = dic.get('value')
-        result = parser.OFPActionSetField(**{field: value})
-    else:
-        result = None
-
-    return result
+    return ofctl_utils.to_action(dic, ofp, parser, action_type, UTIL)
 
 
 def to_actions(dp, acts):
@@ -112,8 +70,8 @@ def to_actions(dp, acts):
                 table_id = UTIL.ofp_table_from_user(a.get('table_id'))
                 inst.append(parser.OFPInstructionGotoTable(table_id))
             elif action_type == 'WRITE_METADATA':
-                metadata = ofctl_utils.str_to_int(a.get('metadata'))
-                metadata_mask = (ofctl_utils.str_to_int(a['metadata_mask'])
+                metadata = str_to_int(a.get('metadata'))
+                metadata_mask = (str_to_int(a['metadata_mask'])
                                  if 'metadata_mask' in a
                                  else parser.UINT64_MAX)
                 inst.append(
@@ -208,50 +166,50 @@ def actions_to_str(instructions):
 
 def to_match(dp, attrs):
     convert = {'in_port': UTIL.ofp_port_from_user,
-               'in_phy_port': int,
-               'metadata': to_match_masked_int,
-               'dl_dst': to_match_eth,
-               'dl_src': to_match_eth,
-               'eth_dst': to_match_eth,
-               'eth_src': to_match_eth,
-               'dl_type': int,
-               'eth_type': int,
+               'in_phy_port': str_to_int,
+               'metadata': ofctl_utils.to_match_masked_int,
+               'dl_dst': ofctl_utils.to_match_eth,
+               'dl_src': ofctl_utils.to_match_eth,
+               'eth_dst': ofctl_utils.to_match_eth,
+               'eth_src': ofctl_utils.to_match_eth,
+               'dl_type': str_to_int,
+               'eth_type': str_to_int,
                'dl_vlan': to_match_vid,
                'vlan_vid': to_match_vid,
-               'vlan_pcp': int,
-               'ip_dscp': int,
-               'ip_ecn': int,
-               'nw_proto': int,
-               'ip_proto': int,
-               'nw_src': to_match_ip,
-               'nw_dst': to_match_ip,
-               'ipv4_src': to_match_ip,
-               'ipv4_dst': to_match_ip,
-               'tp_src': int,
-               'tp_dst': int,
-               'tcp_src': int,
-               'tcp_dst': int,
-               'udp_src': int,
-               'udp_dst': int,
-               'sctp_src': int,
-               'sctp_dst': int,
-               'icmpv4_type': int,
-               'icmpv4_code': int,
-               'arp_op': int,
-               'arp_spa': to_match_ip,
-               'arp_tpa': to_match_ip,
-               'arp_sha': to_match_eth,
-               'arp_tha': to_match_eth,
-               'ipv6_src': to_match_ip,
-               'ipv6_dst': to_match_ip,
-               'ipv6_flabel': int,
-               'icmpv6_type': int,
-               'icmpv6_code': int,
-               'ipv6_nd_target': to_match_ip,
-               'ipv6_nd_sll': to_match_eth,
-               'ipv6_nd_tll': to_match_eth,
-               'mpls_label': int,
-               'mpls_tc': int}
+               'vlan_pcp': str_to_int,
+               'ip_dscp': str_to_int,
+               'ip_ecn': str_to_int,
+               'nw_proto': str_to_int,
+               'ip_proto': str_to_int,
+               'nw_src': ofctl_utils.to_match_ip,
+               'nw_dst': ofctl_utils.to_match_ip,
+               'ipv4_src': ofctl_utils.to_match_ip,
+               'ipv4_dst': ofctl_utils.to_match_ip,
+               'tp_src': str_to_int,
+               'tp_dst': str_to_int,
+               'tcp_src': str_to_int,
+               'tcp_dst': str_to_int,
+               'udp_src': str_to_int,
+               'udp_dst': str_to_int,
+               'sctp_src': str_to_int,
+               'sctp_dst': str_to_int,
+               'icmpv4_type': str_to_int,
+               'icmpv4_code': str_to_int,
+               'arp_op': str_to_int,
+               'arp_spa': ofctl_utils.to_match_ip,
+               'arp_tpa': ofctl_utils.to_match_ip,
+               'arp_sha': ofctl_utils.to_match_eth,
+               'arp_tha': ofctl_utils.to_match_eth,
+               'ipv6_src': ofctl_utils.to_match_ip,
+               'ipv6_dst': ofctl_utils.to_match_ip,
+               'ipv6_flabel': str_to_int,
+               'icmpv6_type': str_to_int,
+               'icmpv6_code': str_to_int,
+               'ipv6_nd_target': ofctl_utils.to_match_ip,
+               'ipv6_nd_sll': ofctl_utils.to_match_eth,
+               'ipv6_nd_tll': ofctl_utils.to_match_eth,
+               'mpls_label': str_to_int,
+               'mpls_tc': str_to_int}
 
     keys = {'dl_dst': 'eth_dst',
             'dl_src': 'eth_src',
@@ -295,55 +253,8 @@ def to_match(dp, attrs):
     return dp.ofproto_parser.OFPMatch(**kwargs)
 
 
-def to_match_eth(value):
-    if '/' in value:
-        value = value.split('/')
-        return value[0], value[1]
-    else:
-        return value
-
-
-def to_match_ip(value):
-    if '/' in value:
-        (ip_addr, ip_mask) = value.split('/')
-        if ip_mask.isdigit():
-            ip = netaddr.ip.IPNetwork(value)
-            ip_addr = str(ip.ip)
-            ip_mask = str(ip.netmask)
-        return ip_addr, ip_mask
-    else:
-        return value
-
-
 def to_match_vid(value):
-    # NOTE: If "vlan_id/dl_vlan" field is described as decimal int value
-    #       (and decimal string value), it is treated as values of
-    #       VLAN tag, and OFPVID_PRESENT(0x1000) bit is automatically
-    #       applied. OTOH, If it is described as hexadecimal string,
-    #       treated as values of oxm_value (including OFPVID_PRESENT
-    #       bit), and OFPVID_PRESENT bit is NOT automatically applied.
-    if isinstance(value, int):
-        # described as decimal int value
-        return value | ofproto_v1_2.OFPVID_PRESENT
-    else:
-        if '/' in value:
-            val = value.split('/')
-            return int(val[0], 0), int(val[1], 0)
-        else:
-            if value.isdigit():
-                # described as decimal string value
-                return int(value, 10) | ofproto_v1_2.OFPVID_PRESENT
-            else:
-                return int(value, 0)
-
-
-def to_match_masked_int(value):
-    if isinstance(value, str) and '/' in value:
-        value = value.split('/')
-        return (ofctl_utils.str_to_int(value[0]),
-                ofctl_utils.str_to_int(value[1]))
-    else:
-        return ofctl_utils.str_to_int(value)
+    return ofctl_utils.to_match_vid(value, ofproto_v1_2.OFPVID_PRESENT)
 
 
 def match_to_str(ofmatch):
@@ -383,14 +294,8 @@ def match_to_str(ofmatch):
 
 
 def match_vid_to_str(value, mask):
-    if mask is not None:
-        value = '0x%04x/0x%04x' % (value, mask)
-    else:
-        if value & ofproto_v1_2.OFPVID_PRESENT:
-            value = str(value & ~ofproto_v1_2.OFPVID_PRESENT)
-        else:
-            value = '0x%04x' % value
-    return value
+    return ofctl_utils.match_vid_to_str(
+        value, mask, ofproto_v1_2.OFPVID_PRESENT)
 
 
 def get_desc_stats(dp, waiters):
@@ -416,12 +321,12 @@ def get_queue_stats(dp, waiters, port=None, queue_id=None):
     if port is None:
         port = ofp.OFPP_ANY
     else:
-        port = int(str(port), 0)
+        port = str_to_int(port)
 
     if queue_id is None:
         queue_id = ofp.OFPQ_ALL
     else:
-        queue_id = int(str(queue_id), 0)
+        queue_id = str_to_int(queue_id)
 
     stats = dp.ofproto_parser.OFPQueueStatsRequest(dp, port,
                                                    queue_id, 0)
@@ -446,7 +351,7 @@ def get_queue_config(dp, waiters, port=None):
     if port is None:
         port = ofp.OFPP_ANY
     else:
-        port = UTIL.ofp_port_from_user(int(str(port), 0))
+        port = UTIL.ofp_port_from_user(str_to_int(port))
     stats = dp.ofproto_parser.OFPQueueGetConfigRequest(dp, port)
     msgs = []
     ofctl_utils.send_stats_request(dp, stats, waiters, msgs, LOG)
@@ -490,12 +395,12 @@ def get_flow_stats(dp, waiters, flow=None):
         flow.get('out_port', dp.ofproto.OFPP_ANY))
     out_group = UTIL.ofp_group_from_user(
         flow.get('out_group', dp.ofproto.OFPG_ANY))
-    cookie = int(flow.get('cookie', 0))
-    cookie_mask = int(flow.get('cookie_mask', 0))
+    cookie = str_to_int(flow.get('cookie', 0))
+    cookie_mask = str_to_int(flow.get('cookie_mask', 0))
     match = to_match(dp, flow.get('match', {}))
     # Note: OpenFlow does not allow to filter flow entries by priority,
     # but for efficiency, ofctl provides the way to do it.
-    priority = int(flow.get('priority', -1))
+    priority = str_to_int(flow.get('priority', -1))
 
     stats = dp.ofproto_parser.OFPFlowStatsRequest(
         dp, table_id, out_port, out_group, cookie, cookie_mask, match)
@@ -536,8 +441,8 @@ def get_aggregate_flow_stats(dp, waiters, flow=None):
         flow.get('out_port', dp.ofproto.OFPP_ANY))
     out_group = UTIL.ofp_group_from_user(
         flow.get('out_group', dp.ofproto.OFPG_ANY))
-    cookie = int(flow.get('cookie', 0))
-    cookie_mask = int(flow.get('cookie_mask', 0))
+    cookie = str_to_int(flow.get('cookie', 0))
+    cookie_mask = str_to_int(flow.get('cookie_mask', 0))
     match = to_match(dp, flow.get('match', {}))
 
     stats = dp.ofproto_parser.OFPAggregateStatsRequest(
@@ -685,7 +590,7 @@ def get_port_stats(dp, waiters, port=None):
     if port is None:
         port = dp.ofproto.OFPP_ANY
     else:
-        port = int(str(port), 0)
+        port = str_to_int(port)
 
     stats = dp.ofproto_parser.OFPPortStatsRequest(
         dp, port, 0)
@@ -717,7 +622,7 @@ def get_group_stats(dp, waiters, group_id=None):
     if group_id is None:
         group_id = dp.ofproto.OFPG_ALL
     else:
-        group_id = int(str(group_id), 0)
+        group_id = str_to_int(group_id)
 
     stats = dp.ofproto_parser.OFPGroupStatsRequest(
         dp, group_id, 0)
@@ -863,19 +768,19 @@ def get_port_desc(dp, waiters):
 
 
 def mod_flow_entry(dp, flow, cmd):
-    cookie = int(flow.get('cookie', 0))
-    cookie_mask = int(flow.get('cookie_mask', 0))
+    cookie = str_to_int(flow.get('cookie', 0))
+    cookie_mask = str_to_int(flow.get('cookie_mask', 0))
     table_id = UTIL.ofp_table_from_user(flow.get('table_id', 0))
-    idle_timeout = int(flow.get('idle_timeout', 0))
-    hard_timeout = int(flow.get('hard_timeout', 0))
-    priority = int(flow.get('priority', 0))
+    idle_timeout = str_to_int(flow.get('idle_timeout', 0))
+    hard_timeout = str_to_int(flow.get('hard_timeout', 0))
+    priority = str_to_int(flow.get('priority', 0))
     buffer_id = UTIL.ofp_buffer_from_user(
         flow.get('buffer_id', dp.ofproto.OFP_NO_BUFFER))
     out_port = UTIL.ofp_port_from_user(
         flow.get('out_port', dp.ofproto.OFPP_ANY))
     out_group = UTIL.ofp_group_from_user(
         flow.get('out_group', dp.ofproto.OFPG_ANY))
-    flags = int(flow.get('flags', 0))
+    flags = str_to_int(flow.get('flags', 0))
     match = to_match(dp, flow.get('match', {}))
     inst = to_actions(dp, flow.get('actions', []))
 
@@ -902,9 +807,11 @@ def mod_group_entry(dp, group, cmd):
 
     buckets = []
     for bucket in group.get('buckets', []):
-        weight = int(bucket.get('weight', 0))
-        watch_port = int(bucket.get('watch_port', dp.ofproto.OFPP_ANY))
-        watch_group = int(bucket.get('watch_group', dp.ofproto.OFPG_ANY))
+        weight = str_to_int(bucket.get('weight', 0))
+        watch_port = str_to_int(
+            bucket.get('watch_port', dp.ofproto.OFPP_ANY))
+        watch_group = str_to_int(
+            bucket.get('watch_group', dp.ofproto.OFPG_ANY))
         actions = []
         for dic in bucket.get('actions', []):
             action = to_action(dp, dic)
@@ -922,9 +829,9 @@ def mod_group_entry(dp, group, cmd):
 def mod_port_behavior(dp, port_config):
     port_no = UTIL.ofp_port_from_user(port_config.get('port_no', 0))
     hw_addr = str(port_config.get('hw_addr'))
-    config = int(port_config.get('config', 0))
-    mask = int(port_config.get('mask', 0))
-    advertise = int(port_config.get('advertise'))
+    config = str_to_int(port_config.get('config', 0))
+    mask = str_to_int(port_config.get('mask', 0))
+    advertise = str_to_int(port_config.get('advertise'))
 
     port_mod = dp.ofproto_parser.OFPPortMod(
         dp, port_no, hw_addr, config, mask, advertise)

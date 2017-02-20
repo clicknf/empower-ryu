@@ -13,14 +13,17 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-import six
 import struct
 import logging
 
+import six
+
+from ryu.lib import stringify
 from . import packet_base
 from . import packet_utils
 from . import bgp
-from ryu.lib import stringify
+from . import openflow
+from . import zebra
 
 
 LOG = logging.getLogger(__name__)
@@ -111,8 +114,14 @@ class tcp(packet_base.PacketBase):
 
     @staticmethod
     def get_payload_type(src_port, dst_port):
+        from ryu.ofproto.ofproto_common import OFP_TCP_PORT, OFP_SSL_PORT_OLD
         if bgp.TCP_SERVER_PORT in [src_port, dst_port]:
             return bgp.BGPMessage
+        elif(src_port in [OFP_TCP_PORT, OFP_SSL_PORT_OLD] or
+             dst_port in [OFP_TCP_PORT, OFP_SSL_PORT_OLD]):
+            return openflow.openflow
+        elif zebra.ZEBRA_PORT in [src_port, dst_port]:
+            return zebra.ZebraMessage
         else:
             return None
 
@@ -166,7 +175,7 @@ class tcp(packet_base.PacketBase):
                 if len(h) < offset:
                     h.extend(bytearray(offset - len(h)))
 
-        if 0 == self.offset:
+        if self.offset == 0:
             self.offset = len(h) >> 2
             offset = self.offset << 4
             struct.pack_into('!B', h, 12, offset)

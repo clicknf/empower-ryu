@@ -18,7 +18,9 @@ import struct
 from . import packet_base
 from . import packet_utils
 from . import dhcp
+from . import dhcp6
 from . import vxlan
+from . import geneve
 
 
 class udp(packet_base.PacketBase):
@@ -52,14 +54,17 @@ class udp(packet_base.PacketBase):
 
     @staticmethod
     def get_packet_type(src_port, dst_port):
-        if ((src_port == 68 and dst_port == 67) or
-            (src_port == 67 and dst_port == 68) or
-            (src_port == 67 and
-             dst_port == 67)):
+        if ((src_port in [67, 68] and dst_port == 67) or
+                (dst_port in [67, 68] and src_port == 67)):
             return dhcp.dhcp
+        if ((src_port in [546, 547] and dst_port == 547) or
+                (dst_port in [546, 547] and src_port == 547)):
+            return dhcp6.dhcp6
         if (dst_port == vxlan.UDP_DST_PORT or
                 dst_port == vxlan.UDP_DST_PORT_OLD):
             return vxlan.vxlan
+        if dst_port == geneve.UDP_DST_PORT:
+            return geneve.geneve
         return None
 
     @classmethod
