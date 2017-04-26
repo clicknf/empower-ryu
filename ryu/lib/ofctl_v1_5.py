@@ -914,6 +914,10 @@ def get_port_desc(dp, waiters, port_no=None, to_user=True):
     return wrap_dpid_dict(dp, descs, to_user)
 
 
+def get_role(dp, waiters, to_user=True):
+    return ofctl_utils.get_role(dp, waiters, to_user)
+
+
 def mod_flow_entry(dp, flow, cmd):
     cookie = str_to_int(flow.get('cookie', 0))
     cookie_mask = str_to_int(flow.get('cookie_mask', 0))
@@ -1103,7 +1107,7 @@ def mod_port_behavior(dp, port_config):
 
 def set_role(dp, role):
     r = UTIL.ofp_role_from_user(role.get('role', dp.ofproto.OFPCR_ROLE_EQUAL))
-    role_request = dp.ofproto_parser.OFPRoleRequest(dp, r, 0)
+    role_request = dp.ofproto_parser.OFPRoleRequest(dp, r, None, 0)
     ofctl_utils.send_msg(dp, role_request, LOG)
 
 

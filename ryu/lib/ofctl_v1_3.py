@@ -345,11 +345,7 @@ def get_desc_stats(dp, waiters, to_user=True):
 
     for msg in msgs:
         stats = msg.body
-        s = {'mfr_desc': stats.mfr_desc,
-             'hw_desc': stats.hw_desc,
-             'sw_desc': stats.sw_desc,
-             'serial_num': stats.serial_num,
-             'dp_desc': stats.dp_desc}
+        s = stats.to_jsondict()[stats.__class__.__name__]
 
     return wrap_dpid_dict(dp, s, to_user)
 
@@ -1044,6 +1040,10 @@ def get_port_desc(dp, waiters, to_user=True):
             descs.append(d)
 
     return wrap_dpid_dict(dp, descs, to_user)
+
+
+def get_role(dp, waiters, to_user=True):
+    return ofctl_utils.get_role(dp, waiters, to_user)
 
 
 def mod_flow_entry(dp, flow, cmd):
