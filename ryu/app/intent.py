@@ -20,10 +20,10 @@ from ryu.controller.handler import set_ev_cls
 from ryu.lib.mac import haddr_to_bin
 from ryu.lib.packet import packet
 from ryu.lib.packet import ethernet
+from ryu.lib.packet import vlan
 from ryu.lib.packet import ether_types
 from ryu.topology.api import get_switch, get_link, get_host
 from ryu.ofproto import ofproto_v1_0
-from ryu.ofproto.ofproto_v1_0_parser import OFPMatch
 from collections import OrderedDict
 from ryu.app.wsgi import WSGIApplication
 from threading import Lock
@@ -34,6 +34,7 @@ from ryu.app.rest_intent import dpid_to_empower
 
 OFP_LW_PRIORITY = 100
 OFP_RULE_PRIORITY = 200
+OFP_TUNNEL_PRIORITY = 300
 BASE_HEX = 16
 
 
@@ -101,27 +102,57 @@ class LSwitch:
 
         self._dp.send_msg(out)
 
-    def add_out_rule(self, src, dst, in_port, out_port,
-                     priority=OFP_LW_PRIORITY):
+    def flowmod(self, fm_type='ADD',
+                src=None, dst=None, in_port=None, match=None,
+                out_port=None,
+                vlan_action=None, vlan_id=None,
+                priority=OFP_LW_PRIORITY):
 
-        actions = [self._dp.ofproto_parser.OFPActionOutput(out_port)]
-        match = self._ofproto_parser.OFPMatch(
-            dl_src=haddr_to_bin(src),
-            dl_dst=haddr_to_bin(dst),
-            in_port=in_port)
+        if match is None:
+            match = self._ofproto_parser.OFPMatch(
+                dl_src=haddr_to_bin(src),
+                dl_dst=haddr_to_bin(dst),
+                in_port=in_port)
+        else:
+            match = self._ofproto_parser.OFPMatch(**match)
 
-        mod = self._ofproto_parser.OFPFlowMod(
-            datapath=self._dp,
-            match=match,
-            cookie=0,
-            command=self._ofproto.OFPFC_ADD,
-            idle_timeout=0,
-            hard_timeout=0,
-            priority=priority,
-            flags=self._ofproto.OFPFF_SEND_FLOW_REM,
-            actions=actions)
+        if fm_type == 'ADD':
 
-        self._dp.send_msg(mod)
+            actions = [self._dp.ofproto_parser.OFPActionOutput(out_port)]
+
+            if vlan_action == 'encap':
+                actions.insert(0, self._dp.ofproto_parser.OFPActionVlanVid(
+                    vlan_id))
+
+            if vlan_action == 'decap':
+                actions.insert(0, self._dp.ofproto_parser.OFPActionStripVlan())
+
+            mod = self._ofproto_parser.OFPFlowMod(
+                datapath=self._dp,
+                match=match,
+                cookie=0,
+                command=self._ofproto.OFPFC_ADD,
+                idle_timeout=0,
+                hard_timeout=0,
+                priority=priority,
+                flags=self._ofproto.OFPFF_SEND_FLOW_REM,
+                actions=actions)
+
+            self._dp.send_msg(mod)
+
+            return mod
+
+        if fm_type == 'DEL':
+
+            mod = self._ofproto_parser.OFPFlowMod(
+                datapath=self._dp,
+                match=match,
+                cookie=0,
+                command=self._ofproto.OFPFC_DELETE)
+
+            self._dp.send_msg(mod)
+
+            return mod
 
 
 def dijkstra(vertices, edges, source):
@@ -170,15 +201,19 @@ class Intent(app_manager.RyuApp):
 
         super(Intent, self).__init__(*args, **kwargs)
 
+        self.poas = {}
         self.rules = {}
         self.lvnf_info = OrderedDict()
         self.LSwitches = {}
         self.mutex = Lock()
+        self.vlan_id = 1000
+        self.vlan_dst_map = {}
 
         wsgi = kwargs['wsgi']
         wsgi.register(IntentController, {'intent_app': self})
 
-    def _get_nexthop_port(self, src_dpid, dst_dpid):
+    def _get_sws_links(self):
+
         sws_list = get_switch(self, None)
         sws = [switch.dp.id for switch in sws_list]
 
@@ -190,6 +225,12 @@ class Intent(app_manager.RyuApp):
                           'dst': link.dst.dpid,
                           'port': link.dst.port_no})
 
+        return sws, links
+
+    def _get_nexthop_port(self, src_dpid, dst_dpid):
+
+        sws, links = self._get_sws_links()
+
         _, prev = dijkstra(sws, links, dst_dpid)
 
         if prev[src_dpid] is None:
@@ -200,40 +241,38 @@ class Intent(app_manager.RyuApp):
     def _compile_rule(self, rule):
         """Compile rule."""
 
-        _, preds = self._get_nexthop_port()
+        stp_switch = self.LSwitches[rule.stp_dpid]
+        ttp_switch = self.LSwitches[rule.ttp_dpid]
 
-        for pred in preds:
+        out_port = self._get_nexthop_port(stp_switch.get_dp_id(),
+                                          ttp_switch.get_dp_id())
+        stp_mod = stp_switch.flowmod(match=rule.match,
+                                     out_port=out_port,
+                                     vlan_action='encap', vlan_id=self.vlan_id,
+                                     priority=OFP_TUNNEL_PRIORITY)
 
-            if not preds[pred]:
-                datapath = get_switch(self, rule.ttp_dpid)[0].dp
-                port = rule.ttp_port
-            else:
-                datapath = get_switch(self, pred)[0].dp
-                port = preds[pred][1]
+        ttp_mod = ttp_switch.flowmod(match={'dl_vlan': self.vlan_id},
+                                     out_port=rule.ttp_port,
+                                     vlan_action='decap',
+                                     priority=OFP_TUNNEL_PRIORITY)
 
-            parser = datapath.ofproto_parser
-            ofproto = datapath.ofproto
-            actions = [parser.OFPActionOutput(port)]
+        rule.flow_mods.append(stp_mod)
+        rule.flow_mods.append(ttp_mod)
 
-            for in_port in datapath.ports:
+        self.vlan_dst_map[self.vlan_id] = (rule.ttp_dpid, rule.ttp_port)
+        self.vlan_id += 1
 
-                if in_port == port:
-                    continue
+    def _remove_rule(self, rule):
 
-                if in_port == 65534:
-                    continue
+        stp_switch = self.LSwitches[rule.stp_dpid]
+        stp_switch.flowmod(fm_type='DEL',
+                           match=rule.match)
 
-                rule.match['in_port'] = in_port
-                match = OFPMatch(**rule.match)
-                del rule.match['in_port']
+        vlan_id = rule.flow_mods[1].match['dl_vlan']
 
-                mod = datapath.ofproto_parser.OFPFlowMod(
-                    datapath=datapath, match=match, cookie=0,
-                    command=ofproto.OFPFC_ADD,
-                    priority=OFP_RULE_PRIORITY, actions=actions)
-
-                rule.flow_mods.append(mod)
-                # datapath.send_msg(mod)
+        for sw_id in self.LSwitches:
+            self.LSwitches[sw_id].flowmod(fm_type='DEL',
+                                          match={'dl_vlan': vlan_id})
 
     def _find_host_dpid(self, mac):
 
@@ -248,7 +287,7 @@ class Intent(app_manager.RyuApp):
 
             if len(target_host) > 0:
 
-                # be sure that Ryu report this host on only one dp and port
+                # assert that Ryu report this host on only one dp and port
                 assert dpid is None
                 assert dp_host_port is None
                 assert len(target_host) == 1
@@ -258,15 +297,7 @@ class Intent(app_manager.RyuApp):
 
         return dpid, dp_host_port
 
-    def update_rule(self, uuid, rule):
-        """Update VNF Link."""
-
-        if rule != self.rules[uuid]:
-            self.remove_rule(uuid)
-            self.add_rule(rule)
-
     def add_rule(self, rule):
-        """Add VNF link."""
 
         try:
 
@@ -275,17 +306,11 @@ class Intent(app_manager.RyuApp):
             self.logger.info('adding rule: %s' % rule.uuid)
             self.logger.info(rule.to_jsondict())
 
-            mac = rule.hwaddr
-
-            # delete all rules and unlearn host
-            for switch in self.LSwitches.values():
-
-                switch.delete_host_rules(mac)
-                switch.delete_host(mac)
-
-            #self._compile_rule(rule)
+            self._compile_rule(rule)
 
             self.rules[rule.uuid] = rule
+
+            self.mutex.release()
 
         except Exception:
             traceback.print_exc()
@@ -295,7 +320,6 @@ class Intent(app_manager.RyuApp):
             self.mutex.release()
 
     def remove_rule(self, uuid=None):
-        """Remove VNF link."""
 
         try:
 
@@ -303,10 +327,14 @@ class Intent(app_manager.RyuApp):
 
             if uuid:
                 self.logger.info('removing rule: %s' % uuid)
+                rule = self.rules[uuid]
+                self._remove_rule(rule)
                 del self.rules[uuid]
             else:
                 self.logger.info('removing all rules')
                 for uuid in list(self.rules):
+                    rule = self.rules[uuid]
+                    self._remove_rule(rule)
                     del self.rules[uuid]
 
         except Exception:
@@ -316,7 +344,59 @@ class Intent(app_manager.RyuApp):
         finally:
             self.mutex.release()
 
-    @set_ev_cls(ofp_event.EventOFPPacketIn, MAIN_DISPATCHER)
+    def update_poa(self, uuid, poa):
+
+        if poa != self.poas[uuid]:
+            self.remove_poa(uuid)
+            self.add_poa(poa)
+
+    def add_poa(self, poa):
+
+        try:
+
+            self.mutex.acquire()
+
+            self.logger.info('adding POA: %s' % poa.uuid)
+            self.logger.info(poa.to_jsondict())
+
+            mac = poa.hwaddr
+
+            # delete all rules and unlearn host
+            for switch in self.LSwitches.values():
+
+                switch.delete_host_rules(mac)
+                switch.delete_host(mac)
+
+            self.poas[poa.uuid] = poa
+
+        except Exception:
+            traceback.print_exc()
+            raise
+
+        finally:
+            self.mutex.release()
+
+    def remove_poa(self, uuid=None):
+
+        try:
+
+            self.mutex.acquire()
+
+            if uuid:
+                self.logger.info('removing POA: %s' % uuid)
+                del self.poas[uuid]
+            else:
+                self.logger.info('removing all POAs')
+                for uuid in list(self.poas):
+                    del self.poas[uuid]
+
+        except Exception:
+            traceback.print_exc()
+            raise
+
+        finally:
+            self.mutex.release()
+
     @set_ev_cls(ofp_event.EventOFPPacketIn, MAIN_DISPATCHER)
     def _packet_in_handler(self, ev):
 
@@ -326,6 +406,7 @@ class Intent(app_manager.RyuApp):
 
         pkt = packet.Packet(msg.data)
         eth = pkt.get_protocol(ethernet.ethernet)
+        vlan_pkt = pkt.get_protocol(vlan.vlan)
 
         if eth.ethertype == ether_types.ETH_TYPE_LLDP:
             # ignore lldp packet
@@ -350,7 +431,6 @@ class Intent(app_manager.RyuApp):
 
             dpid = datapath.id
 
-            # fixme, a switch may reconnect
             if dpid in self.LSwitches:
 
                 switch = self.LSwitches[dpid]
@@ -358,23 +438,44 @@ class Intent(app_manager.RyuApp):
                 if not switch.get_dp().is_active:
 
                     # switch has restarted
+                    self.logger.info('%s (%s) has reconnected'
+                                     % (dpid_to_empower(dpid), dpid))
+
                     del self.LSwitches[dpid]
                     switch = LSwitch(datapath)
                     self.LSwitches[dpid] = switch
 
             else:
+                self.logger.info('%s (%s) has connected' %
+                                 (dpid_to_empower(dpid), dpid))
+
                 switch = LSwitch(datapath)
                 self.LSwitches[dpid] = switch
 
+            # vlan-tagged vnf traffic has its own switching circuit
+            if vlan_pkt is not None:
+
+                dst_dpid, dst_port = self.vlan_dst_map[vlan_pkt.vid]
+                out_port = self._get_nexthop_port(switch.get_dp_id(), dst_dpid)
+
+                switch.flowmod(match={'dl_vlan': vlan_pkt.vid},
+                               out_port=out_port,
+                               priority=OFP_TUNNEL_PRIORITY)
+                switch.packet_out(msg, out_port)
+
+                self.mutex.release()
+
+                return
+
             # for both src and dst check whether these are controlled by Empower
-            empower_src_list = [rule for rule in self.rules.values()
+            empower_src_list = [rule for rule in self.poas.values()
                                 if rule.hwaddr == src]
             assert len(empower_src_list) <= 1
             empower_src = None
             if len(empower_src_list) == 1:
                 empower_src = empower_src_list[0]
 
-            empower_dst_list = [rule for rule in self.rules.values()
+            empower_dst_list = [rule for rule in self.poas.values()
                                 if rule.hwaddr == dst]
             assert len(empower_dst_list) <= 1
             empower_dst = None
@@ -393,7 +494,8 @@ class Intent(app_manager.RyuApp):
                 if out_port is None:
                     switch.packet_out(msg, ofproto.OFPP_FLOOD)
                 else:
-                    switch.add_out_rule(src, dst, msg.in_port, out_port)
+                    switch.flowmod(src=src, dst=dst, in_port=msg.in_port,
+                                   out_port=out_port)
                     switch.packet_out(msg, out_port)
 
             else:
@@ -419,8 +521,9 @@ class Intent(app_manager.RyuApp):
                 if nexthop_port is None:
                     nexthop_port = target_port
 
-                switch.add_out_rule(src, dst, msg.in_port, nexthop_port,
-                                    priority=OFP_RULE_PRIORITY)
+                switch.flowmod(src=src, dst=dst, in_port=msg.in_port,
+                               out_port=nexthop_port,
+                               priority=OFP_RULE_PRIORITY)
                 switch.packet_out(msg, nexthop_port)
 
         except Exception:
@@ -435,12 +538,18 @@ class Intent(app_manager.RyuApp):
         reason = msg.reason
         port_no = msg.desc.port_no
 
+        dpid_str = dpid_to_empower(msg.datapath.id)
+
         ofproto = msg.datapath.ofproto
         if reason == ofproto.OFPPR_ADD:
-            self.logger.info("port added %s", port_no)
+            self.logger.info("port added dpid=%s, port=%s",
+                             dpid_str, port_no)
         elif reason == ofproto.OFPPR_DELETE:
-            self.logger.info("port deleted %s", port_no)
+            self.logger.info("port deleted dpid=%s, port=%s",
+                             dpid_str, port_no)
         elif reason == ofproto.OFPPR_MODIFY:
-            self.logger.info("port modified %s", port_no)
+            self.logger.info("port modified dpid=%s, port=%s",
+                             dpid_str, port_no)
         else:
-            self.logger.info("Illeagal port state %s %s", port_no, reason)
+            self.logger.info("Illeagal port state dpid=%s, port=%s %s",
+                             dpid_str, port_no, reason)
