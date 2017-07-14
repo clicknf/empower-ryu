@@ -155,12 +155,12 @@ def _filter_schema(schema, schema_tables, exclude_table_columns):
     """
 
     tables = {}
-    for tbl_name, tbl_data in schema['tables'].iteritems():
+    for tbl_name, tbl_data in schema['tables'].items():
         if not schema_tables or tbl_name in schema_tables:
             columns = {}
 
             exclude_columns = exclude_table_columns.get(tbl_name, [])
-            for col_name, col_data in tbl_data['columns'].iteritems():
+            for col_name, col_data in tbl_data['columns'].items():
                 if col_name in exclude_columns:
                     continue
 
@@ -286,7 +286,8 @@ class RemoteOvsdb(app_manager.RyuApp):
     @classmethod
     def factory(cls, sock, address, probe_interval=None, min_backoff=None,
                 max_backoff=None, schema_tables=None,
-                schema_exclude_columns={}, *args, **kwargs):
+                schema_exclude_columns=None, *args, **kwargs):
+        schema_exclude_columns = schema_exclude_columns or {}
         ovs_stream = stream.Stream(sock, None, None)
         connection = jsonrpc.Connection(ovs_stream)
         schemas = discover_schemas(connection)
@@ -332,6 +333,7 @@ class RemoteOvsdb(app_manager.RyuApp):
         fsm.set_name(name)
 
         kwargs = kwargs.copy()
+        kwargs['socket'] = sock
         kwargs['address'] = address
         kwargs['idl'] = idl
         kwargs['name'] = name
@@ -358,6 +360,7 @@ class RemoteOvsdb(app_manager.RyuApp):
 
     def __init__(self, *args, **kwargs):
         super(RemoteOvsdb, self).__init__(*args, **kwargs)
+        self.socket = kwargs['socket']
         self.address = kwargs['address']
         self._idl = kwargs['idl']
         self.system_id = kwargs['system_id']

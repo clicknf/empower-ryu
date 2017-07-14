@@ -19,7 +19,10 @@ class RibBase(Command, RouteFormatterMixin):
         'rtfilter',
         'evpn',
         'ipv4fs',
+        'ipv6fs',
         'vpnv4fs',
+        'vpnv6fs',
+        'l2vpnfs',
     ]
 
 

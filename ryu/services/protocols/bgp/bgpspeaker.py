@@ -18,7 +18,11 @@
 
 import netaddr
 from ryu.lib import hub
-from ryu.lib.packet.bgp import BGPFlowSpecTrafficActionCommunity
+from ryu.lib.packet.bgp import (
+    BGPFlowSpecTrafficActionCommunity,
+    BGPFlowSpecVlanActionCommunity,
+    BGPFlowSpecTPIDActionCommunity,
+)
 
 from ryu.services.protocols.bgp.core_manager import CORE_MANAGER
 from ryu.services.protocols.bgp.signals.emit import BgpSignalBus
@@ -58,6 +62,9 @@ from ryu.services.protocols.bgp.api.prefix import (
     FLOWSPEC_FAMILY,
     FLOWSPEC_FAMILY_IPV4,
     FLOWSPEC_FAMILY_VPNV4,
+    FLOWSPEC_FAMILY_IPV6,
+    FLOWSPEC_FAMILY_VPNV6,
+    FLOWSPEC_FAMILY_L2VPN,
     FLOWSPEC_RULES,
     FLOWSPEC_ACTIONS)
 from ryu.services.protocols.bgp.rtconf.common import LOCAL_AS
@@ -72,6 +79,8 @@ from ryu.services.protocols.bgp.rtconf.common import REFRESH_MAX_EOR_TIME
 from ryu.services.protocols.bgp.rtconf.common import REFRESH_STALEPATH_TIME
 from ryu.services.protocols.bgp.rtconf.common import LABEL_RANGE
 from ryu.services.protocols.bgp.rtconf.common import ALLOW_LOCAL_AS_IN_COUNT
+from ryu.services.protocols.bgp.rtconf.common import LOCAL_PREF
+from ryu.services.protocols.bgp.rtconf.common import DEFAULT_LOCAL_PREF
 from ryu.services.protocols.bgp.rtconf import neighbors
 from ryu.services.protocols.bgp.rtconf import vrfs
 from ryu.services.protocols.bgp.rtconf.base import CAP_MBGP_IPV4
@@ -80,18 +89,26 @@ from ryu.services.protocols.bgp.rtconf.base import CAP_MBGP_VPNV4
 from ryu.services.protocols.bgp.rtconf.base import CAP_MBGP_VPNV6
 from ryu.services.protocols.bgp.rtconf.base import CAP_MBGP_EVPN
 from ryu.services.protocols.bgp.rtconf.base import CAP_MBGP_IPV4FS
+from ryu.services.protocols.bgp.rtconf.base import CAP_MBGP_IPV6FS
 from ryu.services.protocols.bgp.rtconf.base import CAP_MBGP_VPNV4FS
+from ryu.services.protocols.bgp.rtconf.base import CAP_MBGP_VPNV6FS
+from ryu.services.protocols.bgp.rtconf.base import CAP_MBGP_L2VPNFS
 from ryu.services.protocols.bgp.rtconf.base import CAP_ENHANCED_REFRESH
 from ryu.services.protocols.bgp.rtconf.base import CAP_FOUR_OCTET_AS_NUMBER
 from ryu.services.protocols.bgp.rtconf.base import MULTI_EXIT_DISC
 from ryu.services.protocols.bgp.rtconf.base import SITE_OF_ORIGINS
-from ryu.services.protocols.bgp.rtconf.neighbors import DEFAULT_CAP_MBGP_IPV4
-from ryu.services.protocols.bgp.rtconf.neighbors import DEFAULT_CAP_MBGP_IPV6
-from ryu.services.protocols.bgp.rtconf.neighbors import DEFAULT_CAP_MBGP_VPNV4
-from ryu.services.protocols.bgp.rtconf.neighbors import DEFAULT_CAP_MBGP_VPNV6
-from ryu.services.protocols.bgp.rtconf.neighbors import DEFAULT_CAP_MBGP_EVPN
-from ryu.services.protocols.bgp.rtconf.neighbors import DEFAULT_CAP_MBGP_IPV4FS
-from ryu.services.protocols.bgp.rtconf.neighbors import DEFAULT_CAP_MBGP_VPNV4FS
+from ryu.services.protocols.bgp.rtconf.neighbors import (
+    DEFAULT_CAP_MBGP_IPV4,
+    DEFAULT_CAP_MBGP_IPV6,
+    DEFAULT_CAP_MBGP_VPNV4,
+    DEFAULT_CAP_MBGP_VPNV6,
+    DEFAULT_CAP_MBGP_EVPN,
+    DEFAULT_CAP_MBGP_IPV4FS,
+    DEFAULT_CAP_MBGP_IPV6FS,
+    DEFAULT_CAP_MBGP_VPNV4FS,
+    DEFAULT_CAP_MBGP_VPNV6FS,
+    DEFAULT_CAP_MBGP_L2VPNFS,
+)
 from ryu.services.protocols.bgp.rtconf.neighbors import (
     DEFAULT_CAP_ENHANCED_REFRESH, DEFAULT_CAP_FOUR_OCTET_AS_NUMBER)
 from ryu.services.protocols.bgp.rtconf.neighbors import DEFAULT_CONNECT_MODE
@@ -120,10 +137,23 @@ RF_VPN_V4 = vrfs.VRF_RF_IPV4
 RF_VPN_V6 = vrfs.VRF_RF_IPV6
 RF_L2_EVPN = vrfs.VRF_RF_L2_EVPN
 RF_VPNV4_FLOWSPEC = vrfs.VRF_RF_IPV4_FLOWSPEC
+RF_VPNV6_FLOWSPEC = vrfs.VRF_RF_IPV6_FLOWSPEC
+RF_L2VPN_FLOWSPEC = vrfs.VRF_RF_L2VPN_FLOWSPEC
 
 # Constants for the Traffic Filtering Actions of Flow Specification.
 FLOWSPEC_TA_SAMPLE = BGPFlowSpecTrafficActionCommunity.SAMPLE
 FLOWSPEC_TA_TERMINAL = BGPFlowSpecTrafficActionCommunity.TERMINAL
+
+# Constants for the VLAN Actions of Flow Specification.
+FLOWSPEC_VLAN_POP = BGPFlowSpecVlanActionCommunity.POP
+FLOWSPEC_VLAN_PUSH = BGPFlowSpecVlanActionCommunity.PUSH
+FLOWSPEC_VLAN_SWAP = BGPFlowSpecVlanActionCommunity.SWAP
+FLOWSPEC_VLAN_RW_INNER = BGPFlowSpecVlanActionCommunity.REWRITE_INNER
+FLOWSPEC_VLAN_RW_OUTER = BGPFlowSpecVlanActionCommunity.REWRITE_OUTER
+
+# Constants for the TPID Actions of Flow Specification.
+FLOWSPEC_TPID_TI = BGPFlowSpecTPIDActionCommunity.TI
+FLOWSPEC_TPID_TO = BGPFlowSpecTPIDActionCommunity.TO
 
 
 class EventPrefix(object):
@@ -198,7 +228,8 @@ class BGPSpeaker(object):
                  ssh_port=None, ssh_host=None, ssh_host_key=None,
                  label_range=DEFAULT_LABEL_RANGE,
                  allow_local_as_in_count=0,
-                 cluster_id=None):
+                 cluster_id=None,
+                 local_pref=DEFAULT_LOCAL_PREF):
         """Create a new BGPSpeaker object with as_number and router_id to
         listen on bgp_server_port.
 
@@ -256,6 +287,9 @@ class BGPSpeaker(object):
         ``cluster_id`` specifies the cluster identifier for Route Reflector.
         It must be the string representation of an IPv4 address.
         If omitted, "router_id" is used for this field.
+
+        ``local_pref`` specifies the default local preference. It must be an
+        integer.
         """
 
         super(BGPSpeaker, self).__init__()
@@ -269,6 +303,7 @@ class BGPSpeaker(object):
             LABEL_RANGE: label_range,
             ALLOW_LOCAL_AS_IN_COUNT: allow_local_as_in_count,
             CLUSTER_ID: cluster_id,
+            LOCAL_PREF: local_pref,
         }
         self._core_start(settings)
         self._init_signal_listeners()
@@ -347,7 +382,10 @@ class BGPSpeaker(object):
                      enable_vpnv6=DEFAULT_CAP_MBGP_VPNV6,
                      enable_evpn=DEFAULT_CAP_MBGP_EVPN,
                      enable_ipv4fs=DEFAULT_CAP_MBGP_IPV4FS,
+                     enable_ipv6fs=DEFAULT_CAP_MBGP_IPV6FS,
                      enable_vpnv4fs=DEFAULT_CAP_MBGP_VPNV4FS,
+                     enable_vpnv6fs=DEFAULT_CAP_MBGP_VPNV6FS,
+                     enable_l2vpnfs=DEFAULT_CAP_MBGP_L2VPNFS,
                      enable_enhanced_refresh=DEFAULT_CAP_ENHANCED_REFRESH,
                      enable_four_octet_as_number=DEFAULT_CAP_FOUR_OCTET_AS_NUMBER,
                      next_hop=None, password=None, multi_exit_disc=None,
@@ -370,31 +408,40 @@ class BGPSpeaker(object):
         an integer between 1 and 65535.
 
         ``enable_ipv4`` enables IPv4 address family for this
-        neighbor. The default is True.
+        neighbor.
 
         ``enable_ipv6`` enables IPv6 address family for this
-        neighbor. The default is False.
+        neighbor.
 
         ``enable_vpnv4`` enables VPNv4 address family for this
-        neighbor. The default is False.
+        neighbor.
 
         ``enable_vpnv6`` enables VPNv6 address family for this
-        neighbor. The default is False.
+        neighbor.
 
         ``enable_evpn`` enables Ethernet VPN address family for this
-        neighbor. The default is False.
+        neighbor.
 
         ``enable_ipv4fs`` enables IPv4 Flow Specification address family
-        for this neighbor. The default is False.
+        for this neighbor.
+
+        ``enable_ipv6fs`` enables IPv6 Flow Specification address family
+        for this neighbor.
 
         ``enable_vpnv4fs`` enables VPNv4 Flow Specification address family
-        for this neighbor. The default is False.
+        for this neighbor.
+
+        ``enable_vpnv6fs`` enables VPNv6 Flow Specification address family
+        for this neighbor.
+
+        ``enable_l2vpnfs`` enables L2VPN Flow Specification address family
+        for this neighbor.
 
         ``enable_enhanced_refresh`` enables Enhanced Route Refresh for this
-        neighbor. The default is False.
+        neighbor.
 
         ``enable_four_octet_as_number`` enables Four-Octet AS Number
-        capability for this neighbor. The default is True.
+        capability for this neighbor.
 
         ``next_hop`` specifies the next hop IP address. If not
         specified, host's ip address to access to a peer is used.
@@ -402,9 +449,9 @@ class BGPSpeaker(object):
         ``password`` is used for the MD5 authentication if it's
         specified. By default, the MD5 authentication is disabled.
 
-        ``multi_exit_disc`` specifies multi exit discriminator (MED) value.
-        The default is None and if not specified, MED value is
-        not sent to the neighbor. It must be an integer.
+        ``multi_exit_disc`` specifies multi exit discriminator (MED) value
+        as an int type value.
+        If omitted, MED is not sent to the neighbor.
 
         ``site_of_origins`` specifies site_of_origin values.
         This parameter must be a list of string.
@@ -424,13 +471,14 @@ class BGPSpeaker(object):
         ``local_port`` specifies source TCP port for iBGP peering.
 
         ``local_as`` specifies local AS number per-peer.
-        The default is the AS number of BGPSpeaker instance.
+        If omitted, the AS number of BGPSpeaker instance is used.
 
         ``connect_mode`` specifies how to connect to this neighbor.
-        CONNECT_MODE_ACTIVE tries to connect from us.
-        CONNECT_MODE_PASSIVE just listens and wait for the connection.
-        CONNECT_MODE_BOTH use both methods.
-        The default is CONNECT_MODE_BOTH.
+        This parameter must be one of the following.
+
+        - CONNECT_MODE_ACTIVE         = 'active'
+        - CONNECT_MODE_PASSIVE        = 'passive'
+        - CONNECT_MODE_BOTH (default) = 'both'
         """
         bgp_neighbor = {
             neighbors.IP_ADDRESS: address,
@@ -449,7 +497,10 @@ class BGPSpeaker(object):
             CAP_MBGP_VPNV6: enable_vpnv6,
             CAP_MBGP_EVPN: enable_evpn,
             CAP_MBGP_IPV4FS: enable_ipv4fs,
+            CAP_MBGP_IPV6FS: enable_ipv6fs,
             CAP_MBGP_VPNV4FS: enable_vpnv4fs,
+            CAP_MBGP_VPNV6FS: enable_vpnv6fs,
+            CAP_MBGP_L2VPNFS: enable_l2vpnfs,
         }
 
         if multi_exit_disc:
@@ -528,7 +579,10 @@ class BGPSpeaker(object):
         state of all the peers return.
 
         ``format`` specifies the format of the response.
-        This parameter must be 'json' or 'cli'.
+        This parameter must be one of the following.
+
+        - 'json' (default)
+        - 'cli'
         """
         show = {
             'params': ['neighbor', 'summary'],
@@ -577,12 +631,9 @@ class BGPSpeaker(object):
     def prefix_del(self, prefix, route_dist=None):
         """ This method deletes a advertised prefix.
 
-        ``prefix`` must be the string representation of an IP network
-        (e.g., 10.1.1.0/24).
+        ``prefix`` must be the string representation of an IP network.
 
-        ``route_dist`` specifies a route distinguisher value. This
-        parameter is necessary for only VPNv4 and VPNv6 address
-        families.
+        ``route_dist`` specifies a route distinguisher value.
         """
         func_name = 'network.del'
         networks = {
@@ -605,10 +656,14 @@ class BGPSpeaker(object):
                         redundancy_mode=None):
         """ This method adds a new EVPN route to be advertised.
 
-        ``route_type`` specifies one of the EVPN route type name. The
-        supported route types are EVPN_ETH_AUTO_DISCOVERY,
-        EVPN_MAC_IP_ADV_ROUTE, EVPN_MULTICAST_ETAG_ROUTE, EVPN_ETH_SEGMENT
-        and EVPN_IP_PREFIX_ROUTE.
+        ``route_type`` specifies one of the EVPN route type name.
+        This parameter must be one of the following.
+
+        - EVPN_ETH_AUTO_DISCOVERY   = 'eth_ad'
+        - EVPN_MAC_IP_ADV_ROUTE     = 'mac_ip_adv'
+        - EVPN_MULTICAST_ETAG_ROUTE = 'multicast_etag'
+        - EVPN_ETH_SEGMENT          = 'eth_seg'
+        - EVPN_IP_PREFIX_ROUTE      = 'ip_prefix'
 
         ``route_dist`` specifies a route distinguisher value.
 
@@ -641,23 +696,29 @@ class BGPSpeaker(object):
         ``next_hop`` specifies the next hop address for this prefix.
 
         ``tunnel_type`` specifies the data plane encapsulation type
-        to advertise.
-        By the default, this attribute is not advertised.
-        The supported encapsulation types are TUNNEL_TYPE_VXLAN and
-        TUNNEL_TYPE_NVGRE.
+        to advertise. By the default, this attribute is not advertised.
+        The supported encapsulation types are following.
+
+        - TUNNEL_TYPE_VXLAN = 'vxlan'
+        - TUNNEL_TYPE_NVGRE = 'nvgre
 
         ``pmsi_tunnel_type`` specifies the type of the PMSI tunnel attribute
         used to encode the multicast tunnel identifier.
-        This field is advertised only if route_type is
-        EVPN_MULTICAST_ETAG_ROUTE.
-        By the default, this attribute is not advertised.
-        The supported PMSI tunnel types are PMSI_TYPE_NO_TUNNEL_INFO and
-        PMSI_TYPE_INGRESS_REP.
+        This attribute is advertised only if route_type is
+        EVPN_MULTICAST_ETAG_ROUTE and not advertised by the default.
         This attribute can also carry vni if tunnel_type is specified.
+        The supported PMSI tunnel types are following.
+
+        - PMSI_TYPE_NO_TUNNEL_INFO = 0
+        - PMSI_TYPE_INGRESS_REP    = 6
 
         ``redundancy_mode`` specifies a redundancy mode type.
-        The supported redundancy mode types are REDUNDANCY_MODE_ALL_ACTIVE
-        and REDUNDANCY_MODE_SINGLE_ACTIVE.
+        This attribute is advertised only if route_type is
+        EVPN_ETH_AUTO_DISCOVERY and not advertised by the default.
+        The supported redundancy mode types are following.
+
+        - REDUNDANCY_MODE_ALL_ACTIVE    = 'all_active'
+        - REDUNDANCY_MODE_SINGLE_ACTIVE = 'single_active'
         """
         func_name = 'evpn_prefix.add_local'
 
@@ -671,19 +732,27 @@ class BGPSpeaker(object):
                   NEXT_HOP: next_hop}
 
         # Set optional arguments
-        if tunnel_type:
+        if tunnel_type in [TUNNEL_TYPE_VXLAN, TUNNEL_TYPE_NVGRE]:
             kwargs[TUNNEL_TYPE] = tunnel_type
+        elif tunnel_type is not None:
+            raise ValueError('Unsupported tunnel type: %s' % tunnel_type)
 
         # Set route type specific arguments
         if route_type == EVPN_ETH_AUTO_DISCOVERY:
-            # REDUNDANCY_MODE is parameter for extended community
             kwargs.update({
                 EVPN_ESI: esi,
                 EVPN_ETHERNET_TAG_ID: ethernet_tag_id,
-                REDUNDANCY_MODE: redundancy_mode,
             })
             if vni is not None:
                 kwargs[EVPN_VNI] = vni
+            # Set Redundancy Mode Attribute arguments
+            if redundancy_mode in [
+                    REDUNDANCY_MODE_ALL_ACTIVE,
+                    REDUNDANCY_MODE_SINGLE_ACTIVE]:
+                kwargs[REDUNDANCY_MODE] = redundancy_mode
+            elif redundancy_mode is not None:
+                raise ValueError('Unsupported Redundancy Mode: %s' %
+                                 redundancy_mode)
         elif route_type == EVPN_MAC_IP_ADV_ROUTE:
             kwargs.update({
                 EVPN_ESI: esi,
@@ -792,12 +861,13 @@ class BGPSpeaker(object):
         """ This method adds a new Flow Specification prefix to be advertised.
 
         ``flowspec_family`` specifies one of the flowspec family name.
-        The supported flowspec families are FLOWSPEC_FAMILY_IPV4 and
-        FLOWSPEC_FAMILY_VPNV4.
+        This parameter must be one of the following.
 
-        ``route_dist`` specifies a route distinguisher value.
-        This parameter is necessary for only VPNv4 Flow Specification
-        address family.
+        - FLOWSPEC_FAMILY_IPV4  = 'ipv4fs'
+        - FLOWSPEC_FAMILY_IPV6  = 'ipv6fs'
+        - FLOWSPEC_FAMILY_VPNV4 = 'vpnv4fs'
+        - FLOWSPEC_FAMILY_VPNV6 = 'vpnv6fs'
+        - FLOWSPEC_FAMILY_L2VPN = 'l2vpnfs'
 
         ``rules`` specifies NLRIs of Flow Specification as
         a dictionary type value.
@@ -805,9 +875,20 @@ class BGPSpeaker(object):
         see `from_user()` method of the following classes.
 
         - :py:mod:`ryu.lib.packet.bgp.FlowSpecIPv4NLRI`
+        - :py:mod:`ryu.lib.packet.bgp.FlowSpecIPv6NLRI`
         - :py:mod:`ryu.lib.packet.bgp.FlowSpecVPNv4NLRI`
+        - :py:mod:`ryu.lib.packet.bgp.FlowSpecVPNv6NLRI`
+        - :py:mod:`ryu.lib.packet.bgp.FlowSpecL2VPNNLRI`
 
-        `` actions`` specifies Traffic Filtering Actions of
+        ``route_dist`` specifies a route distinguisher value.
+        This parameter is required only if flowspec_family is one of the
+        following address family.
+
+        - FLOWSPEC_FAMILY_VPNV4 = 'vpnv4fs'
+        - FLOWSPEC_FAMILY_VPNV6 = 'vpnv6fs'
+        - FLOWSPEC_FAMILY_L2VPN = 'l2vpnfs'
+
+        ``actions`` specifies Traffic Filtering Actions of
         Flow Specification as a dictionary type value.
         The keys are "ACTION_NAME" for each action class and
         values are used for the arguments to that class.
@@ -821,6 +902,8 @@ class BGPSpeaker(object):
         traffic_action  :py:mod:`ryu.lib.packet.bgp.BGPFlowSpecTrafficActionCommunity`
         redirect        :py:mod:`ryu.lib.packet.bgp.BGPFlowSpecRedirectCommunity`
         traffic_marking :py:mod:`ryu.lib.packet.bgp.BGPFlowSpecTrafficMarkingCommunity`
+        vlan_action     :py:mod:`ryu.lib.packet.bgp.BGPFlowSpecVlanActionCommunity`
+        tpid_action     :py:mod:`ryu.lib.packet.bgp.BGPFlowSpecTPIDActionCommunity`
         =============== ===============================================================
 
         Example(IPv4)::
@@ -873,7 +956,8 @@ class BGPSpeaker(object):
             FLOWSPEC_ACTIONS: actions or {},
         }
 
-        if flowspec_family == FLOWSPEC_FAMILY_VPNV4:
+        if flowspec_family in [FLOWSPEC_FAMILY_VPNV4, FLOWSPEC_FAMILY_VPNV6,
+                               FLOWSPEC_FAMILY_L2VPN]:
             func_name = 'flowspec.add_local'
             kwargs.update({ROUTE_DISTINGUISHER: route_dist})
 
@@ -884,14 +968,10 @@ class BGPSpeaker(object):
 
         ``flowspec_family`` specifies one of the flowspec family name.
 
-        ``route_dist`` specifies a route distinguisher value.
-
         ``rules`` specifies NLRIs of Flow Specification as
         a dictionary type value.
 
-        See the following method for details of each parameter and usages.
-
-        - :py:mod:`ryu.services.protocols.bgp.bgpspeaker.BGPSpeaker.flowspec_prefix_add`
+        ``route_dist`` specifies a route distinguisher value.
         """
         func_name = 'flowspec.del'
 
@@ -901,7 +981,8 @@ class BGPSpeaker(object):
             FLOWSPEC_RULES: rules,
         }
 
-        if flowspec_family == FLOWSPEC_FAMILY_VPNV4:
+        if flowspec_family in [FLOWSPEC_FAMILY_VPNV4, FLOWSPEC_FAMILY_VPNV6,
+                               FLOWSPEC_FAMILY_L2VPN]:
             func_name = 'flowspec.del_local'
             kwargs.update({ROUTE_DISTINGUISHER: route_dist})
 
@@ -921,14 +1002,20 @@ class BGPSpeaker(object):
         This parameter must be a list of string.
 
         ``route_family`` specifies route family of the VRF.
-        This parameter must be RF_VPN_V4, RF_VPN_V6 or RF_L2_EVPN.
+        This parameter must be one of the following.
+
+        - RF_VPN_V4 (default) = 'ipv4'
+        - RF_VPN_V6           = 'ipv6'
+        - RF_L2_EVPN          = 'evpn'
+        - RF_VPNV4_FLOWSPEC   = 'ipv4fs'
+        - RF_VPNV6_FLOWSPEC   = 'ipv6fs'
+        - RF_L2VPN_FLOWSPEC   = 'l2vpnfs'
 
         ``multi_exit_disc`` specifies multi exit discriminator (MED) value.
         It must be an integer.
         """
-
-        assert route_family in SUPPORTED_VRF_RF,\
-            'route_family must be RF_VPN_V4, RF_VPN_V6 or RF_L2_EVPN'
+        if route_family not in SUPPORTED_VRF_RF:
+            raise ValueError('Unsupported route_family: %s' % route_family)
 
         vrf = {
             vrfs.ROUTE_DISTINGUISHER: route_dist,
@@ -955,21 +1042,27 @@ class BGPSpeaker(object):
                  route_family='all', format='json'):
         """ This method returns the existing vrfs.
 
-        ``subcommand`` specifies the subcommand.
+        ``subcommand`` specifies one of the following.
 
-          'routes': shows routes present for vrf
-
-          'summary': shows configuration and summary of vrf
+        - 'routes': shows routes present for vrf
+        - 'summary': shows configuration and summary of vrf
 
         ``route_dist`` specifies a route distinguisher value.
         If route_family is not 'all', this value must be specified.
 
         ``route_family`` specifies route family of the VRF.
-        This parameter must be RF_VPN_V4, RF_VPN_V6 or RF_L2_EVPN
-        or 'all'.
+        This parameter must be one of the following.
+
+        - RF_VPN_V4  = 'ipv4'
+        - RF_VPN_V6  = 'ipv6'
+        - RF_L2_EVPN = 'evpn'
+        - 'all' (default)
 
         ``format`` specifies the format of the response.
-        This parameter must be 'json' or 'cli'.
+        This parameter must be one of the following.
+
+        - 'json' (default)
+        - 'cli'
         """
         show = {
             'format': format,
@@ -989,7 +1082,10 @@ class BGPSpeaker(object):
         ``family`` specifies the address family of the RIB (e.g. 'ipv4').
 
         ``format`` specifies the format of the response.
-        This parameter must be 'json' or 'cli'.
+        This parameter must be one of the following.
+
+        - 'json' (default)
+        - 'cli'
         """
         show = {
             'params': ['rib', family],
@@ -1005,15 +1101,17 @@ class BGPSpeaker(object):
         ``route_type`` This parameter is necessary for only received-routes
         and sent-routes.
 
-          received-routes : paths received and not withdrawn by given peer
-
-          sent-routes : paths sent and not withdrawn to given peer
+        - received-routes : paths received and not withdrawn by given peer
+        - sent-routes : paths sent and not withdrawn to given peer
 
         ``address`` specifies the IP address of the peer. It must be
         the string representation of an IP address.
 
         ``format`` specifies the format of the response.
-        This parameter must be 'json' or 'cli'.
+        This parameter must be one of the following.
+
+        - 'json' (default)
+        - 'cli'
         """
         show = {
             'format': format,
@@ -1029,7 +1127,10 @@ class BGPSpeaker(object):
         """ This method returns a list of the BGP neighbors.
 
         ``format`` specifies the format of the response.
-        This parameter must be 'json' or 'cli'.
+        This parameter must be one of the following.
+
+        - 'json' (default)
+        - 'cli'
         """
         show = {
             'params': ['neighbor'],
@@ -1039,11 +1140,11 @@ class BGPSpeaker(object):
         return call('operator.show', **show)
 
     def _set_filter(self, filter_type, address, filters):
-        assert filter_type in ('in', 'out'),\
-            'filter type must be \'in\' or \'out\''
+        assert filter_type in ('in', 'out'), (
+            "filter type must be 'in' or 'out'")
 
-        assert all(isinstance(f, Filter) for f in filters),\
-            'all the items in filters must be an instance of Filter sub-class'
+        assert all(isinstance(f, Filter) for f in filters), (
+            'all the items in filters must be an instance of Filter sub-class')
 
         if filters is None:
             filters = []
@@ -1179,7 +1280,10 @@ class BGPSpeaker(object):
         are added.
 
         ``route_family`` specifies route family of the VRF.
-        This parameter must be RF_VPN_V4 or RF_VPN_V6.
+        This parameter must be one of the following.
+
+        - RF_VPN_V4 (default) = 'ipv4'
+        - RF_VPN_V6           = 'ipv6'
 
         We can set AttributeMap to a neighbor as follows::
 
@@ -1192,8 +1296,8 @@ class BGPSpeaker(object):
             speaker.attribute_map_set('192.168.50.102', [attribute_map])
         """
 
-        assert route_family in (RF_VPN_V4, RF_VPN_V6),\
-            'route_family must be RF_VPN_V4 or RF_VPN_V6'
+        if route_family not in SUPPORTED_VRF_RF:
+            raise ValueError('Unsupported route_family: %s' % route_family)
 
         func_name = 'neighbor.attribute_map.set'
         param = {
@@ -1215,13 +1319,16 @@ class BGPSpeaker(object):
         ``route_dist`` specifies route distinguisher that has attribute_maps.
 
         ``route_family`` specifies route family of the VRF.
-        This parameter must be RF_VPN_V4 or RF_VPN_V6.
+        This parameter must be one of the following.
+
+        - RF_VPN_V4 (default) = 'ipv4'
+        - RF_VPN_V6           = 'ipv6'
 
         Returns a list object containing an instance of AttributeMap
         """
 
-        assert route_family in (RF_VPN_V4, RF_VPN_V6),\
-            'route_family must be RF_VPN_V4 or RF_VPN_V6'
+        if route_family not in SUPPORTED_VRF_RF:
+            raise ValueError('Unsupported route_family: %s' % route_family)
 
         func_name = 'neighbor.attribute_map.get'
         param = {

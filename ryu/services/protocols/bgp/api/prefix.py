@@ -27,11 +27,16 @@ from ryu.lib.packet.bgp import EvpnEthernetSegmentNLRI
 from ryu.lib.packet.bgp import EvpnIpPrefixNLRI
 from ryu.lib.packet.bgp import BGPPathAttributePmsiTunnel
 from ryu.lib.packet.bgp import FlowSpecIPv4NLRI
+from ryu.lib.packet.bgp import FlowSpecIPv6NLRI
 from ryu.lib.packet.bgp import FlowSpecVPNv4NLRI
+from ryu.lib.packet.bgp import FlowSpecVPNv6NLRI
+from ryu.lib.packet.bgp import FlowSpecL2VPNNLRI
 from ryu.lib.packet.bgp import BGPFlowSpecTrafficRateCommunity
 from ryu.lib.packet.bgp import BGPFlowSpecTrafficActionCommunity
 from ryu.lib.packet.bgp import BGPFlowSpecRedirectCommunity
 from ryu.lib.packet.bgp import BGPFlowSpecTrafficMarkingCommunity
+from ryu.lib.packet.bgp import BGPFlowSpecVlanActionCommunity
+from ryu.lib.packet.bgp import BGPFlowSpecTPIDActionCommunity
 
 from ryu.services.protocols.bgp.api.base import EVPN_ROUTE_TYPE
 from ryu.services.protocols.bgp.api.base import EVPN_ESI
@@ -103,10 +108,16 @@ SUPPORTED_EVPN_ROUTE_TYPES = [
 
 # Constants used in API calls for Flow Specification
 FLOWSPEC_FAMILY_IPV4 = FlowSpecIPv4NLRI.FLOWSPEC_FAMILY
+FLOWSPEC_FAMILY_IPV6 = FlowSpecIPv6NLRI.FLOWSPEC_FAMILY
 FLOWSPEC_FAMILY_VPNV4 = FlowSpecVPNv4NLRI.FLOWSPEC_FAMILY
+FLOWSPEC_FAMILY_VPNV6 = FlowSpecVPNv6NLRI.FLOWSPEC_FAMILY
+FLOWSPEC_FAMILY_L2VPN = FlowSpecL2VPNNLRI.FLOWSPEC_FAMILY
 SUPPORTED_FLOWSPEC_FAMILIES = (
     FLOWSPEC_FAMILY_IPV4,
+    FLOWSPEC_FAMILY_IPV6,
     FLOWSPEC_FAMILY_VPNV4,
+    FLOWSPEC_FAMILY_VPNV6,
+    FLOWSPEC_FAMILY_L2VPN,
 )
 
 # Constants for the Traffic Filtering Actions of Flow Specification
@@ -115,20 +126,23 @@ FLOWSPEC_ACTION_TRAFFIC_RATE = BGPFlowSpecTrafficRateCommunity.ACTION_NAME
 FLOWSPEC_ACTION_TRAFFIC_ACTION = BGPFlowSpecTrafficActionCommunity.ACTION_NAME
 FLOWSPEC_ACTION_REDIRECT = BGPFlowSpecRedirectCommunity.ACTION_NAME
 FLOWSPEC_ACTION_TRAFFIC_MARKING = BGPFlowSpecTrafficMarkingCommunity.ACTION_NAME
+FLOWSPEC_ACTION_VLAN = BGPFlowSpecVlanActionCommunity.ACTION_NAME
+FLOWSPEC_ACTION_TPID = BGPFlowSpecTPIDActionCommunity.ACTION_NAME
 
 SUPPORTTED_FLOWSPEC_ACTIONS = (
     FLOWSPEC_ACTION_TRAFFIC_RATE,
     FLOWSPEC_ACTION_TRAFFIC_ACTION,
     FLOWSPEC_ACTION_REDIRECT,
     FLOWSPEC_ACTION_TRAFFIC_MARKING,
+    FLOWSPEC_ACTION_VLAN,
+    FLOWSPEC_ACTION_TPID,
 )
 
 
 # Constants for ESI Label extended community
 REDUNDANCY_MODE_ALL_ACTIVE = 'all_active'
 REDUNDANCY_MODE_SINGLE_ACTIVE = 'single_active'
-REDUNDANCY_MODE_TYPES = [
-    None,
+SUPPORTED_REDUNDANCY_MODES = [
     REDUNDANCY_MODE_ALL_ACTIVE,
     REDUNDANCY_MODE_SINGLE_ACTIVE,
 ]
@@ -206,7 +220,7 @@ def is_valid_ethernet_tag_id(ethernet_tag_id):
 
 @validate(name=REDUNDANCY_MODE)
 def is_valid_redundancy_mode(redundancy_mode):
-    if redundancy_mode not in REDUNDANCY_MODE_TYPES:
+    if redundancy_mode not in SUPPORTED_REDUNDANCY_MODES:
         raise ConfigValueError(conf_name=REDUNDANCY_MODE,
                                conf_value=redundancy_mode)
 
