@@ -152,7 +152,9 @@ class IntentController(ControllerBase):
         try:
             body = \
                 json.dumps(self.intent_app.poas.values(), cls=IntentEncoder)
-            return Response(content_type='application/json', body=body)
+            return Response(content_type='application/json',
+                            body=body,
+                            charset='utf-8')
         except KeyError:
             return Response(status=404)
         except ValueError:
@@ -164,7 +166,9 @@ class IntentController(ControllerBase):
         try:
             uuid = UUID(kwargs['uuid'])
             body = json.dumps(self.intent_app.poas[uuid], cls=IntentEncoder)
-            return Response(content_type='application/json', body=body)
+            return Response(content_type='application/json',
+                            body=body,
+                            charset='utf-8')
         except KeyError:
             return Response(status=404)
         except ValueError:
@@ -275,16 +279,30 @@ class IntentController(ControllerBase):
         except ValueError:
             return Response(status=400)
 
-    @route('intent', '/ls/rules', methods=['GET'])
-    def get_ls_poa(self, req, **kwargs):
+    @route('intent', '/intent/rules', methods=['GET'])
+    def get_rules_all(self, req, **kwargs):
 
         try:
-            sorted_poas = self.intent_app.rules_str
-            sorted_poas.sort()
-            return Response(body=json.dumps('<br>'.join(sorted_poas)))
-
+            body = \
+                json.dumps(self.intent_app.rules.values(), cls=IntentEncoder)
+            return Response(content_type='application/json',
+                            body=body,
+                            charset='utf-8')
         except KeyError:
             return Response(status=404)
+        except ValueError:
+            return Response(status=400)
 
+    @route('intent', '/intent/rules/{uuid}', methods=['GET'])
+    def get_rules(self, req, **kwargs):
+
+        try:
+            uuid = UUID(kwargs['uuid'])
+            body = json.dumps(self.intent_app.rules[uuid], cls=IntentEncoder)
+            return Response(content_type='application/json',
+                            body=body,
+                            charset='utf-8')
+        except KeyError:
+            return Response(status=404)
         except ValueError:
             return Response(status=400)
