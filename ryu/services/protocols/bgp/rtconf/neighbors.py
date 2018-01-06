@@ -22,6 +22,8 @@ import numbers
 
 import netaddr
 
+from ryu.lib import ip
+
 from ryu.lib.packet.bgp import RF_IPv4_UC
 from ryu.lib.packet.bgp import RF_IPv6_UC
 from ryu.lib.packet.bgp import RF_IPv4_VPN
@@ -160,7 +162,7 @@ def validate_changes(changes):
 
 
 def valid_ip_address(addr):
-    if not netaddr.valid_ipv4(addr) and not netaddr.valid_ipv6(addr):
+    if not ip.valid_ipv4(addr) and not ip.valid_ipv6(addr):
         return False
     return True
 
@@ -221,6 +223,7 @@ def valid_prefix_filter(filter_):
     ge = filter_.get('ge', None)
     le = filter_.get('le', None)
     return PrefixFilter(prefix, policy, ge=ge, le=le)
+
 
 PREFIX_FILTER = 'prefix_filter'
 
@@ -816,6 +819,7 @@ class NeighborsConf(BaseConf):
 class NeighborConfListener(ConfWithIdListener, ConfWithStatsListener):
     """Base listener for change events to a specific neighbors' configurations.
     """
+
     def __init__(self, neigh_conf):
         super(NeighborConfListener, self).__init__(neigh_conf)
         neigh_conf.add_listener(NeighborConf.UPDATE_ENABLED_EVT,

@@ -143,6 +143,7 @@ class ipv6(packet_base.PacketBase):
             ext_hdrs_len += len(ext_hdr)
         return self._MIN_LEN + ext_hdrs_len
 
+
 ipv6.register_packet_type(icmpv6.icmpv6, inet.IPPROTO_ICMPV6)
 ipv6.register_packet_type(tcp.tcp, inet.IPPROTO_TCP)
 ipv6.register_packet_type(udp.udp, inet.IPPROTO_UDP)
@@ -153,6 +154,7 @@ ipv6.register_packet_type(gre.gre, inet.IPPROTO_GRE)
 @six.add_metaclass(abc.ABCMeta)
 class header(stringify.StringifyMixin):
     """extension header abstract class."""
+
     def __init__(self, nxt):
         self.nxt = nxt
 
@@ -433,7 +435,7 @@ class routing_type3(header):
         assert isinstance(adrs, list)
         self.adrs = adrs
         self._pad = (8 - ((len(self.adrs) - 1) * (16 - self.cmpi) +
-                     (16 - self.cmpe) % 8)) % 8
+                          (16 - self.cmpe) % 8)) % 8
 
     @classmethod
     def _get_size(cls, size):

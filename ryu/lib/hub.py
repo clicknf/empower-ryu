@@ -16,8 +16,7 @@
 
 import logging
 import os
-
-import netaddr
+from ryu.lib import ip
 
 
 # We don't bother to use cfg.py because monkey patch needs to be
@@ -116,7 +115,7 @@ if HUB_TYPE == 'eventlet':
             assert backlog is None
             assert spawn == 'default'
 
-            if netaddr.valid_ipv6(listen_info[0]):
+            if ip.valid_ipv6(listen_info[0]):
                 self.server = eventlet.listen(listen_info,
                                               family=socket.AF_INET6)
             elif os.path.isdir(os.path.dirname(listen_info[0])):
@@ -139,6 +138,39 @@ if HUB_TYPE == 'eventlet':
             while True:
                 sock, addr = self.server.accept()
                 spawn(self.handle, sock, addr)
+
+    class StreamClient(object):
+        def __init__(self, addr, timeout=None, **ssl_args):
+            assert ip.valid_ipv4(addr[0]) or ip.valid_ipv6(addr[0])
+            self.addr = addr
+            self.timeout = timeout
+            self.ssl_args = ssl_args
+            self._is_active = True
+
+        def connect(self):
+            try:
+                if self.timeout is not None:
+                    client = socket.create_connection(self.addr,
+                                                      timeout=self.timeout)
+                else:
+                    client = socket.create_connection(self.addr)
+            except socket.error:
+                return None
+
+            if self.ssl_args:
+                client = ssl.wrap_socket(client, **self.ssl_args)
+
+            return client
+
+        def connect_loop(self, handle, interval):
+            while self._is_active:
+                sock = self.connect()
+                if sock:
+                    handle(sock, self.addr)
+                sleep(interval)
+
+        def stop(self):
+            self._is_active = False
 
     class LoggingWrapper(object):
         def write(self, message):

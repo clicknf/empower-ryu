@@ -236,6 +236,7 @@ class UnknownMrtMessage(MrtMessage):
     def serialize(self):
         return self.buf
 
+
 # Registers self to unknown(default) type
 UnknownMrtMessage._UNKNOWN_TYPE = UnknownMrtMessage
 
@@ -297,6 +298,7 @@ class Ospf2MrtRecord(MrtCommonRecord):
         super(Ospf2MrtRecord, self).__init__(
             message=message, timestamp=timestamp, type_=type_,
             subtype=subtype, length=length)
+
 
 # Registers self to unknown(default) type
 Ospf2MrtMessage._UNKNOWN_TYPE = Ospf2MrtMessage
@@ -566,7 +568,7 @@ class MrtPeer(stringify.StringifyMixin):
         return cls(bgp_id, ip_addr, as_num, type_), buf[offset:]
 
     def serialize(self):
-        if netaddr.valid_ipv6(self.ip_addr):
+        if ip.valid_ipv6(self.ip_addr):
             # Sets Peer IP Address family bit to IPv6
             self.type |= self.IP_ADDR_FAMILY_BIT
         ip_addr = ip.text_to_bin(self.ip_addr)
@@ -923,11 +925,9 @@ class Bgp4MpStateChangeMrtMessage(Bgp4MpMrtMessage):
 
     def serialize(self):
         # fixup
-        if (netaddr.valid_ipv4(self.peer_ip)
-                and netaddr.valid_ipv4(self.local_ip)):
+        if ip.valid_ipv4(self.peer_ip) and ip.valid_ipv4(self.local_ip):
             self.afi = self.AFI_IPv4
-        elif (netaddr.valid_ipv6(self.peer_ip)
-              and netaddr.valid_ipv6(self.local_ip)):
+        elif ip.valid_ipv6(self.peer_ip) and ip.valid_ipv6(self.local_ip):
             self.afi = self.AFI_IPv6
         else:
             raise ValueError(
@@ -1013,11 +1013,9 @@ class Bgp4MpMessageMrtMessage(Bgp4MpMrtMessage):
 
     def serialize(self):
         # fixup
-        if (netaddr.valid_ipv4(self.peer_ip)
-                and netaddr.valid_ipv4(self.local_ip)):
+        if ip.valid_ipv4(self.peer_ip) and ip.valid_ipv4(self.local_ip):
             self.afi = self.AFI_IPv4
-        elif (netaddr.valid_ipv6(self.peer_ip)
-              and netaddr.valid_ipv6(self.local_ip)):
+        elif ip.valid_ipv6(self.peer_ip) and ip.valid_ipv6(self.local_ip):
             self.afi = self.AFI_IPv6
         else:
             raise ValueError(

@@ -26,6 +26,9 @@ from ryu import ofproto
 from . import event
 
 
+NAME = 'ofp_event'
+
+
 class EventOFPMsgBase(event.EventBase):
     """
     The base class of OpenFlow event class.
@@ -47,6 +50,7 @@ class EventOFPMsgBase(event.EventBase):
     The msg object has some more additional members whose values are extracted
     from the original OpenFlow message.
     """
+
     def __init__(self, msg):
         self.timestamp = time.time()
         super(EventOFPMsgBase, self).__init__()
@@ -115,6 +119,7 @@ class EventOFPStateChange(event.EventBase):
     datapath  ryu.controller.controller.Datapath instance of the switch
     ========= =================================================================
     """
+
     def __init__(self, dp):
         super(EventOFPStateChange, self).__init__()
         self.datapath = dp
@@ -136,6 +141,7 @@ class EventOFPPortStateChange(event.EventBase):
     port_no   Port number which state was changed
     ========= =================================================================
     """
+
     def __init__(self, dp, reason, port_no):
         super(EventOFPPortStateChange, self).__init__()
         self.datapath = dp
