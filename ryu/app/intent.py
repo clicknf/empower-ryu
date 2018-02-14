@@ -227,30 +227,42 @@ class Intent(app_manager.RyuApp):
 
         return sws, links
 
-    def _get_nexthop_port(self, src_dpid, dst_dpid):
+    def _get_nexthop(self, src_dpid, dst_dpid):
 
         sws, links = self._get_sws_links()
 
         _, prev = dijkstra(sws, links, dst_dpid)
 
         if prev[src_dpid] is None:
-            return None
+            return None, None
         else:
-            return prev[src_dpid][1]
+            return prev[src_dpid]  # (next_dpid, current_port)
 
     def _compile_rule(self, rule):
         """Compile rule."""
 
+        next_dpid, out_port = self._get_nexthop(rule.stp_dpid,
+                                                rule.ttp_dpid)
         stp_switch = self.LSwitches[rule.stp_dpid]
-        ttp_switch = self.LSwitches[rule.ttp_dpid]
-
-        out_port = self._get_nexthop_port(stp_switch.get_dp_id(),
-                                          ttp_switch.get_dp_id())
         stp_mod = stp_switch.flowmod(match=rule.match,
                                      out_port=out_port,
                                      vlan_action='encap', vlan_id=self.vlan_id,
                                      priority=OFP_TUNNEL_PRIORITY)
 
+        while next_dpid != rule.ttp_dpid:
+
+            if next_dpid is None:
+                self.logger.error('No path found for requested chain')
+                return
+
+            switch = self.LSwitches[next_dpid]
+            next_dpid, next_port = self._get_nexthop(next_dpid,
+                                                     rule.ttp_dpid)
+            switch.flowmod(match={'dl_vlan': self.vlan_id},
+                           out_port=next_port,
+                           priority=OFP_TUNNEL_PRIORITY)
+
+        ttp_switch = self.LSwitches[rule.ttp_dpid]
         ttp_mod = ttp_switch.flowmod(match={'dl_vlan': self.vlan_id},
                                      out_port=rule.ttp_port,
                                      vlan_action='decap',
@@ -337,6 +349,8 @@ class Intent(app_manager.RyuApp):
                     self._remove_rule(rule)
                     del self.rules[uuid]
 
+        except KeyError:
+            raise
         except Exception:
             traceback.print_exc()
             raise
@@ -408,6 +422,11 @@ class Intent(app_manager.RyuApp):
         eth = pkt.get_protocol(ethernet.ethernet)
         vlan_pkt = pkt.get_protocol(vlan.vlan)
 
+        if vlan_pkt is not None:
+            # vlan-tagged vnf traffic is related to rules
+            # and has its own circuits
+            return
+
         if eth.ethertype == ether_types.ETH_TYPE_LLDP:
             # ignore lldp packet
             return
@@ -451,21 +470,6 @@ class Intent(app_manager.RyuApp):
 
                 switch = LSwitch(datapath)
                 self.LSwitches[dpid] = switch
-
-            # vlan-tagged vnf traffic has its own switching circuit
-            if vlan_pkt is not None:
-
-                dst_dpid, dst_port = self.vlan_dst_map[vlan_pkt.vid]
-                out_port = self._get_nexthop_port(switch.get_dp_id(), dst_dpid)
-
-                switch.flowmod(match={'dl_vlan': vlan_pkt.vid},
-                               out_port=out_port,
-                               priority=OFP_TUNNEL_PRIORITY)
-                switch.packet_out(msg, out_port)
-
-                self.mutex.release()
-
-                return
 
             # for both src and dst check whether these are controlled by Empower
             empower_src_list = [rule for rule in self.poas.values()
@@ -515,8 +519,8 @@ class Intent(app_manager.RyuApp):
                     switch.packet_out(msg, ofproto.OFPP_FLOOD)
                     return
 
-                nexthop_port = self._get_nexthop_port(switch.get_dp_id(),
-                                                      target_dpid)
+                _, nexthop_port = self._get_nexthop(switch.get_dp_id(),
+                                                    target_dpid)
 
                 if nexthop_port is None:
                     nexthop_port = target_port
