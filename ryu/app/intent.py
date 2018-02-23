@@ -241,9 +241,21 @@ class Intent(app_manager.RyuApp):
     def _compile_rule(self, rule):
         """Compile rule."""
 
+        stp_switch = self.LSwitches[rule.stp_dpid]
+
+        # the rule endpoints are on the same switch
+        if rule.stp_dpid == rule.ttp_dpid:
+
+            stp_mod = stp_switch.flowmod(match=rule.match,
+                                         out_port=rule.ttp_port,
+                                         priority=OFP_TUNNEL_PRIORITY)
+            rule.flow_mods.append(stp_mod)
+            return
+
+        # the rule endpoints are on different switches
         next_dpid, out_port = self._get_nexthop(rule.stp_dpid,
                                                 rule.ttp_dpid)
-        stp_switch = self.LSwitches[rule.stp_dpid]
+
         stp_mod = stp_switch.flowmod(match=rule.match,
                                      out_port=out_port,
                                      vlan_action='encap', vlan_id=self.vlan_id,
@@ -269,7 +281,7 @@ class Intent(app_manager.RyuApp):
                                      priority=OFP_TUNNEL_PRIORITY)
 
         rule.flow_mods.append(stp_mod)
-        rule.flow_mods.append(ttp_mod)
+        rule.flow_mods.append(ttp_mod) # only for storing the matching vlan_id
 
         self.vlan_dst_map[self.vlan_id] = (rule.ttp_dpid, rule.ttp_port)
         self.vlan_id += 1
@@ -280,11 +292,14 @@ class Intent(app_manager.RyuApp):
         stp_switch.flowmod(fm_type='DEL',
                            match=rule.match)
 
-        vlan_id = rule.flow_mods[1].match['dl_vlan']
+        # the rule involved only one switch, no vlans have been used
+        if len(rule.flow_mods) > 1:
 
-        for sw_id in self.LSwitches:
-            self.LSwitches[sw_id].flowmod(fm_type='DEL',
-                                          match={'dl_vlan': vlan_id})
+            vlan_id = rule.flow_mods[1].match['dl_vlan']
+
+            for sw_id in self.LSwitches:
+                self.LSwitches[sw_id].flowmod(fm_type='DEL',
+                                              match={'dl_vlan': vlan_id})
 
     def _find_host_dpid(self, mac):
 
