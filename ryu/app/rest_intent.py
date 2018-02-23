@@ -87,7 +87,7 @@ class IntentPOA(object):
     def __init__(self, uuid, poa):
 
         self.uuid = uuid
-        self.hwaddr = poa['hwaddr']
+        self.hwaddr = poa['hwaddr'].upper()
         self.dpid = empower_to_dpid(poa['dpid'])
         self.port = int(poa['port'])
 
@@ -146,7 +146,7 @@ class IntentController(ControllerBase):
         self.intent_app = data['intent_app']
 
     # POAS
-    @route('intent', '/intent/poa', methods=['GET'])
+    @route('intent', '/intent/poas', methods=['GET'])
     def get_poa_all(self, req, **kwargs):
 
         try:
@@ -160,7 +160,7 @@ class IntentController(ControllerBase):
         except ValueError:
             return Response(status=400)
 
-    @route('intent', '/intent/poa/{uuid}', methods=['GET'])
+    @route('intent', '/intent/poas/{uuid}', methods=['GET'])
     def get_poa(self, req, **kwargs):
 
         try:
@@ -174,18 +174,18 @@ class IntentController(ControllerBase):
         except ValueError:
             return Response(status=400)
 
-    @route('intent', '/intent/poa', methods=['DELETE'])
+    @route('intent', '/intent/poas', methods=['DELETE'])
     def delete_poa_all(self, req, **kwargs):
 
         try:
-            self.intent_app.remove_poa(None)
+            self.intent_app.remove_poa()
             return Response(status=204)
         except KeyError:
             return Response(status=404)
         except ValueError:
             return Response(status=400)
 
-    @route('intent', '/intent/poa/{uuid}', methods=['DELETE'])
+    @route('intent', '/intent/poas/{uuid}', methods=['DELETE'])
     def delete_poa(self, req, **kwargs):
 
         try:
@@ -197,7 +197,7 @@ class IntentController(ControllerBase):
         except ValueError:
             return Response(status=400)
 
-    @route('intent', '/intent/poa/{uuid}', methods=['PUT'])
+    @route('intent', '/intent/poas/{uuid}', methods=['PUT'])
     def update_poa(self, req, **kwargs):
 
         try:
@@ -219,7 +219,7 @@ class IntentController(ControllerBase):
         except ValueError:
             return Response(status=400)
 
-    @route('intent', '/intent/poa', methods=['POST'])
+    @route('intent', '/intent/poas', methods=['POST'])
     def add_poa(self, req, **kwargs):
 
         try:
@@ -272,7 +272,7 @@ class IntentController(ControllerBase):
     def delete_rule_all(self, req, **kwargs):
 
         try:
-            self.intent_app.remove_rule(None)
+            self.intent_app.remove_rule()
             return Response(status=204)
         except KeyError:
             return Response(status=404)
