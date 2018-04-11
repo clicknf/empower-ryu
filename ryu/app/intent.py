@@ -243,11 +243,13 @@ class Intent(app_manager.RyuApp):
     def _compile_rule(self, rule):
         """Compile rule."""
 
-        stp_dpid = rule.stp_endpoint.dpid
+        stp_endpoint_port = rule.stp_endpoint.ports[rule.stp_vport]
+        stp_dpid = stp_endpoint_port.dpid
         stp_switch = self.LSwitches[stp_dpid]
 
-        ttp_dpid = rule.ttp_endpoint.dpid
-        ttp_port = rule.ttp_endpoint.ports[rule.ttp_vport].port_no
+        ttp_endpoint_port = rule.ttp_endpoint.ports[rule.ttp_vport]
+        ttp_dpid = ttp_endpoint_port.dpid
+        ttp_port = ttp_endpoint_port.port_no
 
         # the rule endpoints are on the same switch
         if stp_dpid == ttp_dpid:
@@ -293,7 +295,8 @@ class Intent(app_manager.RyuApp):
 
     def _remove_rule(self, rule):
 
-        stp_dpid = rule.stp_endpoint.dpid
+        stp_endpoint_port = rule.stp_endpoint.ports[rule.stp_vport]
+        stp_dpid = stp_endpoint_port.dpid
         stp_switch = self.LSwitches[stp_dpid]
         stp_switch.flowmod(fm_type='DEL',
                            match=rule.match)
@@ -361,9 +364,13 @@ class Intent(app_manager.RyuApp):
 
             if uuid:
                 self.logger.info('removing rule: %s' % uuid)
-                rule = self.rules[uuid]
-                self._remove_rule(rule)
-                del self.rules[uuid]
+                if uuid in self.rules:
+                    rule = self.rules[uuid]
+                    self._remove_rule(rule)
+                    del self.rules[uuid]
+                else:
+                    self.logger.warning('rule uuid %s not found' % uuid)
+
             else:
                 self.logger.info('removing all rules')
                 for uuid in list(self.rules):
@@ -421,7 +428,10 @@ class Intent(app_manager.RyuApp):
 
             if uuid:
                 self.logger.info('removing EndPoint: %s' % uuid)
-                del self.endpoints[uuid]
+                if uuid in self.endpoints:
+                    del self.endpoints[uuid]
+                else:
+                    self.logger.warning('endpoint uuid %s not found' % uuid)
             else:
                 self.logger.info('removing all EndPoints')
                 for uuid in list(self.endpoints):
@@ -534,8 +544,9 @@ class Intent(app_manager.RyuApp):
                     target_dpid, target_port = self._find_host_dpid(dst)
 
                 if empower_dst is not None:
-                    target_dpid = empower_dst.dpid
-                    target_port = empower_dst.hwaddr_to_port[dst].port_no
+                    endpoint_port = empower_dst.hwaddr_to_port[dst]
+                    target_dpid = endpoint_port.dpid
+                    target_port = endpoint_port.port_no
 
                 if target_dpid is None:
 

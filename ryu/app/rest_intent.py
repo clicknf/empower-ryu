@@ -94,22 +94,23 @@ class IntentEndPoint(object):
 
         def __init__(self, port):
             self.hwaddr = port['hwaddr'].upper()
+            self.dpid = empower_to_dpid(port['dpid'])
             self.port_no = int(port['port_no'])
-            self.learning = bool(port['learning'])
+            self.learn_host = bool(port['learn_host'])
 
         def to_jsondict(self):
             """Return JSON representation of this object."""
 
             out = {'hwaddr': self.hwaddr,
+                   'dpid': dpid_to_empower(self.dpid),
                    'port_no': self.port_no,
-                   'learning': self.learning}
+                   'learn_host': self.learn_host}
 
             return {'IntentEndPoint.Port': out}
 
     def __init__(self, uuid, endpoint):
 
         self.uuid = uuid
-        self.dpid = empower_to_dpid(endpoint['dpid'])
         self.ports = {}
         self.hwaddr_to_port = {}
 
@@ -117,21 +118,21 @@ class IntentEndPoint(object):
 
             port = self.Port(v_port)
             self.ports[int(v_port_id)] = port
-            self.hwaddr_to_port[port.hwaddr] = port
+
+            if port.learn_host:
+                self.hwaddr_to_port[port.hwaddr] = port
 
     def to_jsondict(self):
         """Return JSON representation of this object."""
 
-        out = {'dpid': dpid_to_empower(self.dpid),
-               'ports': self.ports,
+        out = {'ports': self.ports,
                'uuid': self.uuid}
 
         return {'IntentEndPoint': out}
 
     def __eq__(self, other):
 
-        return self.dpid == other.dpid and \
-               self.ports == other.ports
+        return self.ports == other.ports
 
 
 class IterEncoder(json.JSONEncoder):
