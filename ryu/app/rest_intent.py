@@ -48,28 +48,34 @@ def dpid_to_empower(dpid):
 
 class IntentRule(object):
 
-    def __init__(self, uuid, rule):
+    def __init__(self, uuid, rule, endpoints):
 
         self.uuid = uuid
-        self.ttp_dpid = empower_to_dpid(rule['ttp_dpid'])
-        self.ttp_port = int(rule['ttp_port'])
-        self.stp_dpid = empower_to_dpid(rule['stp_dpid'])
-        self.stp_port = int(rule['stp_port'])
+
+        ttp_uuid = UUID(rule['ttp_uuid'])
+        self.ttp_endpoint = endpoints[ttp_uuid]
+        self.ttp_vport = int(rule['ttp_vport'])
+
+        stp_uuid = UUID(rule['stp_uuid'])
+        self.stp_endpoint = endpoints[stp_uuid]
+        self.stp_vport = int(rule['stp_vport'])
+
         self.match = rule['match']
 
-        if self.match == {}:
-            self.match = {'in_port': self.stp_port}
+        if rule['match'] == {}:
+            ovs_port = self.stp_endpoint.ports[self.stp_vport]
+            self.match = {'in_port': ovs_port.port_no}
 
         self.flow_mods = []
 
     def to_jsondict(self):
         """Return JSON representation of this object."""
 
-        out = {'ttp_dpid': dpid_to_empower(self.ttp_dpid),
-               'ttp_port': self.ttp_port,
+        out = {'ttp_endpoint': self.ttp_endpoint,
+               'ttp_vport': self.ttp_vport,
                'uuid': self.uuid,
-               'stp_dpid': dpid_to_empower(self.stp_dpid),
-               'stp_port': self.stp_port,
+               'stp_endpoint': self.stp_endpoint,
+               'stp_vport': self.stp_vport,
                'match': self.match,
                'flow_mods': self.flow_mods}
 
@@ -77,35 +83,56 @@ class IntentRule(object):
 
     def __eq__(self, other):
 
-        return self.ttp_dpid == other.ttp_dpid and \
-               self.ttp_port == other.ttp_port and \
+        return self.ttp_endpoint == other.ttp_endpoint and \
+               self.ttp_vport == other.ttp_vport and \
                self.match == other.match
 
 
-class IntentPOA(object):
+class IntentEndPoint(object):
 
-    def __init__(self, uuid, poa):
+    class Port:
+
+        def __init__(self, port):
+            self.hwaddr = port['hwaddr'].upper()
+            self.dpid = empower_to_dpid(port['dpid'])
+            self.port_no = int(port['port_no'])
+            self.learn_host = bool(port['learn_host'])
+
+        def to_jsondict(self):
+            """Return JSON representation of this object."""
+
+            out = {'hwaddr': self.hwaddr,
+                   'dpid': dpid_to_empower(self.dpid),
+                   'port_no': self.port_no,
+                   'learn_host': self.learn_host}
+
+            return {'IntentEndPoint.Port': out}
+
+    def __init__(self, uuid, endpoint):
 
         self.uuid = uuid
-        self.hwaddr = poa['hwaddr'].upper()
-        self.dpid = empower_to_dpid(poa['dpid'])
-        self.port = int(poa['port'])
+        self.ports = {}
+        self.hwaddr_to_port = {}
+
+        for v_port_id, v_port in endpoint['ports'].items():
+
+            port = self.Port(v_port)
+            self.ports[int(v_port_id)] = port
+
+            if port.learn_host:
+                self.hwaddr_to_port[port.hwaddr] = port
 
     def to_jsondict(self):
         """Return JSON representation of this object."""
 
-        out = {'dpid': dpid_to_empower(self.dpid),
-               'port': self.port,
-               'uuid': self.uuid,
-               'hwaddr': self.hwaddr}
+        out = {'ports': self.ports,
+               'uuid': self.uuid}
 
-        return {'IntentPOA': out}
+        return {'IntentEndPoint': out}
 
     def __eq__(self, other):
 
-        return self.hwaddr == other.hwaddr and \
-               self.dpid == other.dpid and \
-               self.port == other.port
+        return self.ports == other.ports
 
 
 class IterEncoder(json.JSONEncoder):
@@ -133,9 +160,12 @@ class IntentEncoder(IterEncoder):
         if isinstance(obj, IntentRule):
             ret = obj.to_jsondict()
             return ret['IntentRule']
-        if isinstance(obj, IntentPOA):
+        if isinstance(obj, IntentEndPoint):
             ret = obj.to_jsondict()
-            return ret['IntentPOA']
+            return ret['IntentEndPoint']
+        if isinstance(obj, IntentEndPoint.Port):
+            ret = obj.to_jsondict()
+            return ret['IntentEndPoint.Port']
         return super(IntentEncoder, self).default(obj)
 
 
@@ -145,13 +175,13 @@ class IntentController(ControllerBase):
         super(IntentController, self).__init__(req, link, data, **config)
         self.intent_app = data['intent_app']
 
-    # POAS
-    @route('intent', '/intent/poas', methods=['GET'])
-    def get_poa_all(self, req, **kwargs):
+    # ENDPOINTS
+    @route('intent', '/intent/eps', methods=['GET'])
+    def get_endpoints(self, req, **kwargs):
 
         try:
             body = \
-                json.dumps(self.intent_app.poas.values(), cls=IntentEncoder)
+                json.dumps(self.intent_app.endpoints.values(), cls=IntentEncoder)
             return Response(content_type='application/json',
                             body=body,
                             charset='utf-8')
@@ -160,12 +190,12 @@ class IntentController(ControllerBase):
         except ValueError:
             return Response(status=400)
 
-    @route('intent', '/intent/poas/{uuid}', methods=['GET'])
-    def get_poa(self, req, **kwargs):
+    @route('intent', '/intent/eps/{uuid}', methods=['GET'])
+    def get_endpoint(self, req, **kwargs):
 
         try:
             uuid = UUID(kwargs['uuid'])
-            body = json.dumps(self.intent_app.poas[uuid], cls=IntentEncoder)
+            body = json.dumps(self.intent_app.endpoints[uuid], cls=IntentEncoder)
             return Response(content_type='application/json',
                             body=body,
                             charset='utf-8')
@@ -174,44 +204,44 @@ class IntentController(ControllerBase):
         except ValueError:
             return Response(status=400)
 
-    @route('intent', '/intent/poas', methods=['DELETE'])
-    def delete_poa_all(self, req, **kwargs):
+    @route('intent', '/intent/eps', methods=['DELETE'])
+    def delete_endpoints(self, req, **kwargs):
 
         try:
-            self.intent_app.remove_poa()
+            self.intent_app.remove_endpoint()
             return Response(status=204)
         except KeyError:
             return Response(status=404)
         except ValueError:
             return Response(status=400)
 
-    @route('intent', '/intent/poas/{uuid}', methods=['DELETE'])
-    def delete_poa(self, req, **kwargs):
+    @route('intent', '/intent/eps/{uuid}', methods=['DELETE'])
+    def delete_endpoint(self, req, **kwargs):
 
         try:
             uuid = UUID(kwargs['uuid'])
-            self.intent_app.remove_poa(uuid)
+            self.intent_app.remove_endpoint(uuid)
             return Response(status=204)
         except KeyError:
             return Response(status=404)
         except ValueError:
             return Response(status=400)
 
-    @route('intent', '/intent/poas/{uuid}', methods=['PUT'])
-    def update_poa(self, req, **kwargs):
+    @route('intent', '/intent/eps/{uuid}', methods=['PUT'])
+    def update_endpoint(self, req, **kwargs):
 
         try:
 
             body = json.loads(str(req.body, 'utf-8'))
             uuid = UUID(kwargs['uuid'])
 
-            if uuid not in self.intent_app.poas:
-                poa = IntentPOA(uuid, body)
-                self.intent_app.add_poa(poa)
+            if uuid not in self.intent_app.endpoints:
+                endpoint = IntentEndPoint(uuid, body)
+                self.intent_app.add_endpoint(endpoint)
                 return Response(status=201)
 
-            poa = IntentPOA(uuid, body)
-            self.intent_app.update_poa(uuid, poa)
+            endpoint = IntentEndPoint(uuid, body)
+            self.intent_app.update_endpoint(uuid, endpoint)
             return Response(status=204)
 
         except KeyError:
@@ -219,16 +249,16 @@ class IntentController(ControllerBase):
         except ValueError:
             return Response(status=400)
 
-    @route('intent', '/intent/poas', methods=['POST'])
-    def add_poa(self, req, **kwargs):
+    @route('intent', '/intent/eps', methods=['POST'])
+    def add_endpoint(self, req, **kwargs):
 
         try:
 
             body = json.loads(str(req.body, 'utf-8'))
-            poa = IntentPOA(uuid4(), body)
+            endpoint = IntentEndPoint(uuid4(), body)
 
-            self.intent_app.add_poa(poa)
-            headers = {'Location': '/intent/poa/%s' % poa.uuid}
+            self.intent_app.add_endpoint(endpoint)
+            headers = {'Location': '/intent/eps/%s' % endpoint.uuid}
 
             return Response(status=201, headers=headers)
 
@@ -244,7 +274,7 @@ class IntentController(ControllerBase):
         try:
 
             body = json.loads(str(req.body, 'utf-8'))
-            rule = IntentRule(uuid4(), body)
+            rule = IntentRule(uuid4(), body, self.intent_app.endpoints)
 
             self.intent_app.add_rule(rule)
             headers = {'Location': '/intent/rule/%s' % rule.uuid}
@@ -269,7 +299,7 @@ class IntentController(ControllerBase):
             return Response(status=400)
 
     @route('intent', '/intent/rules', methods=['DELETE'])
-    def delete_rule_all(self, req, **kwargs):
+    def delete_rules(self, req, **kwargs):
 
         try:
             self.intent_app.remove_rule()
@@ -280,7 +310,7 @@ class IntentController(ControllerBase):
             return Response(status=400)
 
     @route('intent', '/intent/rules', methods=['GET'])
-    def get_rules_all(self, req, **kwargs):
+    def get_rules(self, req, **kwargs):
 
         try:
             body = \
@@ -294,7 +324,7 @@ class IntentController(ControllerBase):
             return Response(status=400)
 
     @route('intent', '/intent/rules/{uuid}', methods=['GET'])
-    def get_rules(self, req, **kwargs):
+    def get_rule(self, req, **kwargs):
 
         try:
             uuid = UUID(kwargs['uuid'])

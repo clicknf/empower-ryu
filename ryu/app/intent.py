@@ -28,9 +28,11 @@ from collections import OrderedDict
 from ryu.app.wsgi import WSGIApplication
 from threading import Lock
 import traceback
+import json
 
 from ryu.app.rest_intent import IntentController
 from ryu.app.rest_intent import dpid_to_empower
+from ryu.app.rest_intent import IntentEncoder
 
 OFP_LW_PRIORITY = 100
 OFP_RULE_PRIORITY = 200
@@ -201,7 +203,7 @@ class Intent(app_manager.RyuApp):
 
         super(Intent, self).__init__(*args, **kwargs)
 
-        self.poas = {}
+        self.endpoints = {}
         self.rules = {}
         self.lvnf_info = OrderedDict()
         self.LSwitches = {}
@@ -241,54 +243,61 @@ class Intent(app_manager.RyuApp):
     def _compile_rule(self, rule):
         """Compile rule."""
 
-        stp_switch = self.LSwitches[rule.stp_dpid]
+        stp_endpoint_port = rule.stp_endpoint.ports[rule.stp_vport]
+        stp_dpid = stp_endpoint_port.dpid
+        stp_switch = self.LSwitches[stp_dpid]
+
+        ttp_endpoint_port = rule.ttp_endpoint.ports[rule.ttp_vport]
+        ttp_dpid = ttp_endpoint_port.dpid
+        ttp_port = ttp_endpoint_port.port_no
 
         # the rule endpoints are on the same switch
-        if rule.stp_dpid == rule.ttp_dpid:
+        if stp_dpid == ttp_dpid:
 
             stp_mod = stp_switch.flowmod(match=rule.match,
-                                         out_port=rule.ttp_port,
+                                         out_port=ttp_port,
                                          priority=OFP_TUNNEL_PRIORITY)
             rule.flow_mods.append(stp_mod)
             return
 
         # the rule endpoints are on different switches
-        next_dpid, out_port = self._get_nexthop(rule.stp_dpid,
-                                                rule.ttp_dpid)
+        next_dpid, out_port = self._get_nexthop(stp_dpid, ttp_dpid)
 
         stp_mod = stp_switch.flowmod(match=rule.match,
                                      out_port=out_port,
-                                     vlan_action='encap', vlan_id=self.vlan_id,
+                                     vlan_action='encap',
+                                     vlan_id=self.vlan_id,
                                      priority=OFP_TUNNEL_PRIORITY)
 
-        while next_dpid != rule.ttp_dpid:
+        while next_dpid != ttp_dpid:
 
             if next_dpid is None:
                 self.logger.error('No path found for requested chain')
                 return
 
             switch = self.LSwitches[next_dpid]
-            next_dpid, next_port = self._get_nexthop(next_dpid,
-                                                     rule.ttp_dpid)
+            next_dpid, next_port = self._get_nexthop(next_dpid, ttp_dpid)
             switch.flowmod(match={'dl_vlan': self.vlan_id},
                            out_port=next_port,
                            priority=OFP_TUNNEL_PRIORITY)
 
-        ttp_switch = self.LSwitches[rule.ttp_dpid]
+        ttp_switch = self.LSwitches[ttp_dpid]
         ttp_mod = ttp_switch.flowmod(match={'dl_vlan': self.vlan_id},
-                                     out_port=rule.ttp_port,
+                                     out_port=ttp_port,
                                      vlan_action='decap',
                                      priority=OFP_TUNNEL_PRIORITY)
 
         rule.flow_mods.append(stp_mod)
         rule.flow_mods.append(ttp_mod) # only for storing the matching vlan_id
 
-        self.vlan_dst_map[self.vlan_id] = (rule.ttp_dpid, rule.ttp_port)
+        self.vlan_dst_map[self.vlan_id] = (ttp_dpid, ttp_port)
         self.vlan_id += 1
 
     def _remove_rule(self, rule):
 
-        stp_switch = self.LSwitches[rule.stp_dpid]
+        stp_endpoint_port = rule.stp_endpoint.ports[rule.stp_vport]
+        stp_dpid = stp_endpoint_port.dpid
+        stp_switch = self.LSwitches[stp_dpid]
         stp_switch.flowmod(fm_type='DEL',
                            match=rule.match)
 
@@ -331,7 +340,8 @@ class Intent(app_manager.RyuApp):
             self.mutex.acquire()
 
             self.logger.info('adding rule: %s' % rule.uuid)
-            self.logger.info(rule.to_jsondict())
+            self.logger.info(json.dumps(rule.to_jsondict(),
+                                        cls=IntentEncoder))
 
             self._compile_rule(rule)
 
@@ -354,9 +364,13 @@ class Intent(app_manager.RyuApp):
 
             if uuid:
                 self.logger.info('removing rule: %s' % uuid)
-                rule = self.rules[uuid]
-                self._remove_rule(rule)
-                del self.rules[uuid]
+                if uuid in self.rules:
+                    rule = self.rules[uuid]
+                    self._remove_rule(rule)
+                    del self.rules[uuid]
+                else:
+                    self.logger.warning('rule uuid %s not found' % uuid)
+
             else:
                 self.logger.info('removing all rules')
                 for uuid in list(self.rules):
@@ -373,30 +387,31 @@ class Intent(app_manager.RyuApp):
         finally:
             self.mutex.release()
 
-    def update_poa(self, uuid, poa):
+    def update_endpoint(self, uuid, endpoint):
 
-        if poa != self.poas[uuid]:
-            self.remove_poa(uuid)
-            self.add_poa(poa)
+        if endpoint != self.endpoints[uuid]:
+            self.remove_endpoint(uuid)
+            self.add_endpoint(endpoint)
 
-    def add_poa(self, poa):
+    def add_endpoint(self, endpoint):
 
         try:
 
             self.mutex.acquire()
 
-            self.logger.info('adding POA: %s' % poa.uuid)
-            self.logger.info(poa.to_jsondict())
-
-            mac = poa.hwaddr
+            self.logger.info('adding EndPoint: %s' % endpoint.uuid)
+            self.logger.info(json.dumps(endpoint.to_jsondict(),
+                                        cls=IntentEncoder))
 
             # delete all rules and unlearn host
             for switch in self.LSwitches.values():
 
-                switch.delete_host_rules(mac)
-                switch.delete_host(mac)
+                for port in endpoint.ports.values():
 
-            self.poas[poa.uuid] = poa
+                    switch.delete_host_rules(port.hwaddr)
+                    switch.delete_host(port.hwaddr)
+
+            self.endpoints[endpoint.uuid] = endpoint
 
         except Exception:
             traceback.print_exc()
@@ -405,19 +420,22 @@ class Intent(app_manager.RyuApp):
         finally:
             self.mutex.release()
 
-    def remove_poa(self, uuid=None):
+    def remove_endpoint(self, uuid=None):
 
         try:
 
             self.mutex.acquire()
 
             if uuid:
-                self.logger.info('removing POA: %s' % uuid)
-                del self.poas[uuid]
+                self.logger.info('removing EndPoint: %s' % uuid)
+                if uuid in self.endpoints:
+                    del self.endpoints[uuid]
+                else:
+                    self.logger.warning('endpoint uuid %s not found' % uuid)
             else:
-                self.logger.info('removing all POAs')
-                for uuid in list(self.poas):
-                    del self.poas[uuid]
+                self.logger.info('removing all EndPoints')
+                for uuid in list(self.endpoints):
+                    del self.endpoints[uuid]
 
         except Exception:
             traceback.print_exc()
@@ -487,15 +505,15 @@ class Intent(app_manager.RyuApp):
                 self.LSwitches[dpid] = switch
 
             # for both src and dst check whether these are controlled by Empower
-            empower_src_list = [rule for rule in self.poas.values()
-                                if rule.hwaddr == src]
+            empower_src_list = [endpoint for endpoint in self.endpoints.values()
+                                if src in endpoint.hwaddr_to_port]
             assert len(empower_src_list) <= 1
             empower_src = None
             if len(empower_src_list) == 1:
                 empower_src = empower_src_list[0]
 
-            empower_dst_list = [rule for rule in self.poas.values()
-                                if rule.hwaddr == dst]
+            empower_dst_list = [endpoint for endpoint in self.endpoints.values()
+                                if dst in endpoint.hwaddr_to_port]
             assert len(empower_dst_list) <= 1
             empower_dst = None
             if len(empower_dst_list) == 1:
@@ -526,8 +544,9 @@ class Intent(app_manager.RyuApp):
                     target_dpid, target_port = self._find_host_dpid(dst)
 
                 if empower_dst is not None:
-                    target_dpid = empower_dst.dpid
-                    target_port = empower_dst.port
+                    endpoint_port = empower_dst.hwaddr_to_port[dst]
+                    target_dpid = endpoint_port.dpid
+                    target_port = endpoint_port.port_no
 
                 if target_dpid is None:
 
