@@ -235,20 +235,23 @@ class IntentController(ControllerBase):
             body = json.loads(str(req.body, 'utf-8'))
             uuid = UUID(kwargs['uuid'])
 
-            if uuid not in self.intent_app.endpoints:
-                endpoint = IntentEndPoint(uuid, body)
-                self.intent_app.add_endpoint(endpoint)
-                return Response(status=201)
-
             endpoint = IntentEndPoint(uuid, body)
-            self.intent_app.update_endpoint(uuid, endpoint)
-            return Response(status=204)
+
+            if uuid not in self.intent_app.endpoints:
+                self.intent_app.add_endpoint(endpoint)
+            else:
+                self.intent_app.update_endpoint(uuid, endpoint)
+
+            headers = {'Location': '/intent/eps/%s' % endpoint.uuid}
+
+            return Response(status=201, headers=headers)
 
         except KeyError:
             return Response(status=404)
         except ValueError:
             return Response(status=400)
 
+    '''
     @route('intent', '/intent/eps', methods=['POST'])
     def add_endpoint(self, req, **kwargs):
 
@@ -266,8 +269,10 @@ class IntentController(ControllerBase):
             return Response(status=404)
         except ValueError:
             return Response(status=400)
+    '''
 
     # RULES
+
     @route('intent', '/intent/rules', methods=['POST'])
     def add_rule(self, req, **kwargs):
 
