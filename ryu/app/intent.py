@@ -310,6 +310,15 @@ class Intent(app_manager.RyuApp):
                 self.LSwitches[sw_id].flowmod(fm_type='DEL',
                                               match={'dl_vlan': vlan_id})
 
+    def _remove_endpoint(self, endpoint):
+        # delete all rules and unlearn host
+
+        for switch in self.LSwitches.values():
+
+            for port in endpoint.ports.values():
+                switch.delete_host_rules(port.hwaddr)
+                switch.delete_host(port.hwaddr)
+
     def _find_host_dpid(self, mac):
 
         dpid = None
@@ -403,13 +412,7 @@ class Intent(app_manager.RyuApp):
             self.logger.info(json.dumps(endpoint.to_jsondict(),
                                         cls=IntentEncoder))
 
-            # delete all rules and unlearn host
-            for switch in self.LSwitches.values():
-
-                for port in endpoint.ports.values():
-
-                    switch.delete_host_rules(port.hwaddr)
-                    switch.delete_host(port.hwaddr)
+            self._remove_endpoint(endpoint)
 
             self.endpoints[endpoint.uuid] = endpoint
 
@@ -429,12 +432,16 @@ class Intent(app_manager.RyuApp):
             if uuid:
                 self.logger.info('removing EndPoint: %s' % uuid)
                 if uuid in self.endpoints:
+                    endpoint = self.endpoints[uuid]
+                    self._remove_endpoint(endpoint)
                     del self.endpoints[uuid]
                 else:
                     self.logger.warning('endpoint uuid %s not found' % uuid)
             else:
                 self.logger.info('removing all EndPoints')
                 for uuid in list(self.endpoints):
+                    endpoint = self.endpoints[uuid]
+                    self._remove_endpoint(endpoint)
                     del self.endpoints[uuid]
 
         except Exception:
