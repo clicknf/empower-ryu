@@ -13,6 +13,8 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+
+from ryu import cfg
 from ryu.base import app_manager
 from ryu.controller import ofp_event
 from ryu.controller.handler import MAIN_DISPATCHER
@@ -22,7 +24,8 @@ from ryu.lib.packet import packet
 from ryu.lib.packet import ethernet
 from ryu.lib.packet import vlan
 from ryu.lib.packet import ether_types
-from ryu.topology.api import get_switch, get_link, get_host
+from ryu.topology.api import get_switch, get_link, get_host, \
+    get_all_host, get_all_link, get_all_switch
 from ryu.ofproto import ofproto_v1_0
 from collections import OrderedDict
 from ryu.app.wsgi import WSGIApplication
@@ -30,9 +33,11 @@ from threading import Lock
 import traceback
 import json
 
-from ryu.app.rest_intent import IntentController
-from ryu.app.rest_intent import dpid_to_empower
-from ryu.app.rest_intent import IntentEncoder
+from ryu.topology.event import EventSwitchEnter, EventHostAdd, EventLinkAdd
+
+from ryu.app.agent_intent import dpid_to_empower
+from ryu.app.agent_intent import IntentEncoder
+from ryu.app.agent_intent import start_agent
 
 OFP_LW_PRIORITY = 100
 OFP_RULE_PRIORITY = 200
@@ -203,6 +208,15 @@ class Intent(app_manager.RyuApp):
 
         super(Intent, self).__init__(*args, **kwargs)
 
+        conf = cfg.CONF
+        conf.register_opts([
+            cfg.StrOpt('empower_ip',
+                       default='127.0.0.1',
+                       help=('The Empower Runtime controller ip')),
+            cfg.IntOpt('empower_port',
+                       default=4444,
+                       help=('The Empower Runtime controller port'))])
+
         self.endpoints = {}
         self.rules = {}
         self.lvnf_info = OrderedDict()
@@ -211,8 +225,16 @@ class Intent(app_manager.RyuApp):
         self.vlan_id = 1000
         self.vlan_dst_map = {}
 
-        wsgi = kwargs['wsgi']
-        wsgi.register(IntentController, {'intent_app': self})
+        self.agent = start_agent(conf.empower_ip, conf.empower_port, 2, self)
+
+    def get_switches(self):
+        return get_all_switch(self)
+
+    def get_links(self):
+        return list(get_all_link(self).keys())
+
+    def get_hosts(self):
+        return get_all_host(self)
 
     def _get_sws_links(self):
 
@@ -243,12 +265,11 @@ class Intent(app_manager.RyuApp):
     def _compile_rule(self, rule):
         """Compile rule."""
 
-        stp_endpoint_port = rule.stp_endpoint.ports[rule.stp_vport]
-        stp_dpid = stp_endpoint_port.dpid
+        stp_dpid = rule.stp_endpoint.dpid
         stp_switch = self.LSwitches[stp_dpid]
 
+        ttp_dpid = rule.ttp_endpoint.dpid
         ttp_endpoint_port = rule.ttp_endpoint.ports[rule.ttp_vport]
-        ttp_dpid = ttp_endpoint_port.dpid
         ttp_port = ttp_endpoint_port.port_no
 
         # the rule endpoints are on the same switch
@@ -310,14 +331,17 @@ class Intent(app_manager.RyuApp):
                 self.LSwitches[sw_id].flowmod(fm_type='DEL',
                                               match={'dl_vlan': vlan_id})
 
-    def _remove_endpoint(self, endpoint):
+    def _remove_empower_hosts(self, endpoint):
         # delete all rules and unlearn host
 
         for switch in self.LSwitches.values():
 
             for port in endpoint.ports.values():
-                switch.delete_host_rules(port.hwaddr)
-                switch.delete_host(port.hwaddr)
+
+                for hwaddr in port.dont_learn:
+
+                    switch.delete_host_rules(hwaddr)
+                    switch.delete_host(hwaddr)
 
     def _find_host_dpid(self, mac):
 
@@ -396,13 +420,16 @@ class Intent(app_manager.RyuApp):
         finally:
             self.mutex.release()
 
-    def update_endpoint(self, uuid, endpoint):
+    def update_endpoint(self, endpoint):
 
-        if endpoint != self.endpoints[uuid]:
+        uuid = endpoint.uuid
+
+        if uuid in self.endpoints and endpoint != self.endpoints[uuid]:
             self.remove_endpoint(uuid)
-            self.add_endpoint(endpoint)
 
-    def add_endpoint(self, endpoint):
+        self._add_endpoint(endpoint)
+
+    def _add_endpoint(self, endpoint):
 
         try:
 
@@ -412,7 +439,7 @@ class Intent(app_manager.RyuApp):
             self.logger.info(json.dumps(endpoint.to_jsondict(),
                                         cls=IntentEncoder))
 
-            self._remove_endpoint(endpoint)
+            self._remove_empower_hosts(endpoint)
 
             self.endpoints[endpoint.uuid] = endpoint
 
@@ -433,7 +460,7 @@ class Intent(app_manager.RyuApp):
                 self.logger.info('removing EndPoint: %s' % uuid)
                 if uuid in self.endpoints:
                     endpoint = self.endpoints[uuid]
-                    self._remove_endpoint(endpoint)
+                    self._remove_empower_hosts(endpoint)
                     del self.endpoints[uuid]
                 else:
                     self.logger.warning('endpoint uuid %s not found' % uuid)
@@ -441,7 +468,7 @@ class Intent(app_manager.RyuApp):
                 self.logger.info('removing all EndPoints')
                 for uuid in list(self.endpoints):
                     endpoint = self.endpoints[uuid]
-                    self._remove_endpoint(endpoint)
+                    self._remove_empower_hosts(endpoint)
                     del self.endpoints[uuid]
 
         except Exception:
@@ -509,6 +536,7 @@ class Intent(app_manager.RyuApp):
                                  (dpid_to_empower(dpid), dpid))
 
                 switch = LSwitch(datapath)
+                switch.flowmod(fm_type='DEL', match={})
                 self.LSwitches[dpid] = switch
 
             # for both src and dst check whether these are controlled by Empower
@@ -552,7 +580,7 @@ class Intent(app_manager.RyuApp):
 
                 if empower_dst is not None:
                     endpoint_port = empower_dst.hwaddr_to_port[dst]
-                    target_dpid = endpoint_port.dpid
+                    target_dpid = endpoint_port.endpoint.dpid
                     target_port = endpoint_port.port_no
 
                 if target_dpid is None:
@@ -598,3 +626,15 @@ class Intent(app_manager.RyuApp):
         else:
             self.logger.info("Illeagal port state dpid=%s, port=%s %s",
                              dpid_str, port_no, reason)
+
+    @set_ev_cls(EventSwitchEnter)
+    def _event_switch_enter_handler(self, ev):
+        self.agent.send_of_network_item(ev.switch)
+
+    @set_ev_cls(EventLinkAdd)
+    def _event_link_add_handler(self, ev):
+        self.agent.send_of_network_item(ev.link)
+
+    @set_ev_cls(EventHostAdd)
+    def _event_host_add_handler(self, ev):
+        self.agent.send_of_network_item(ev.host)
