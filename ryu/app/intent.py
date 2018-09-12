@@ -24,8 +24,8 @@ from ryu.lib.packet import packet
 from ryu.lib.packet import ethernet
 from ryu.lib.packet import vlan
 from ryu.lib.packet import ether_types
-from ryu.topology.api import get_switch, get_link, get_host, \
-    get_all_host, get_all_link, get_all_switch
+from ryu.topology.api import get_switch, get_link, get_host
+    #get_all_host, get_all_link, get_all_switch
 from ryu.ofproto import ofproto_v1_0
 from collections import OrderedDict
 from ryu.app.wsgi import WSGIApplication
@@ -33,7 +33,7 @@ from threading import Lock
 import traceback
 import json
 
-from ryu.topology.event import EventSwitchEnter, EventHostAdd, EventLinkAdd
+from ryu.topology.event import EventHostAdd, EventLinkAdd, EventSwitchEnter
 
 from ryu.app.agent_intent import dpid_to_empower
 from ryu.app.agent_intent import IntentEncoder
@@ -228,13 +228,22 @@ class Intent(app_manager.RyuApp):
         self.agent = start_agent(conf.empower_ip, conf.empower_port, 2, self)
 
     def get_switches(self):
-        return get_all_switch(self)
+
+        switches = []
+
+        for switch in get_switch(self, None):
+            if switch.dp.id in self.LSwitches:
+                switches.append(switch)
+
+        return switches
 
     def get_links(self):
-        return list(get_all_link(self).keys())
+
+        return list(get_link(self, None).keys())
 
     def get_hosts(self):
-        return get_all_host(self)
+
+        return get_host(self, None)
 
     def _get_sws_links(self):
 
@@ -316,8 +325,7 @@ class Intent(app_manager.RyuApp):
 
     def _remove_rule(self, rule):
 
-        stp_endpoint_port = rule.stp_endpoint.ports[rule.stp_vport]
-        stp_dpid = stp_endpoint_port.dpid
+        stp_dpid = rule.stp_endpoint.dpid
         stp_switch = self.LSwitches[stp_dpid]
         stp_switch.flowmod(fm_type='DEL',
                            match=rule.match)
@@ -515,29 +523,7 @@ class Intent(app_manager.RyuApp):
 
             self.mutex.acquire()
 
-            dpid = datapath.id
-
-            if dpid in self.LSwitches:
-
-                switch = self.LSwitches[dpid]
-
-                if not switch.get_dp().is_active:
-
-                    # switch has restarted
-                    self.logger.info('%s (%s) has reconnected'
-                                     % (dpid_to_empower(dpid), dpid))
-
-                    del self.LSwitches[dpid]
-                    switch = LSwitch(datapath)
-                    self.LSwitches[dpid] = switch
-
-            else:
-                self.logger.info('%s (%s) has connected' %
-                                 (dpid_to_empower(dpid), dpid))
-
-                switch = LSwitch(datapath)
-                switch.flowmod(fm_type='DEL', match={})
-                self.LSwitches[dpid] = switch
+            switch = self.LSwitches[datapath.id]
 
             # for both src and dst check whether these are controlled by Empower
             empower_src_list = [endpoint for endpoint in self.endpoints.values()
@@ -596,7 +582,7 @@ class Intent(app_manager.RyuApp):
 
                 switch.flowmod(src=src, dst=dst, in_port=msg.in_port,
                                out_port=nexthop_port,
-                               priority=OFP_RULE_PRIORITY)
+                                priority=OFP_RULE_PRIORITY)
                 switch.packet_out(msg, nexthop_port)
 
         except Exception:
@@ -627,8 +613,37 @@ class Intent(app_manager.RyuApp):
             self.logger.info("Illeagal port state dpid=%s, port=%s %s",
                              dpid_str, port_no, reason)
 
+
+
     @set_ev_cls(EventSwitchEnter)
     def _event_switch_enter_handler(self, ev):
+
+        #dpid = datapath.id
+        datapath = ev.switch.dp
+        dpid = datapath.id
+
+        if dpid in self.LSwitches:
+
+            switch = self.LSwitches[dpid]
+
+            if not switch.get_dp().is_active:
+                # switch has restarted
+                self.logger.info('%s (%s) has reconnected'
+                                 % (dpid_to_empower(dpid), dpid))
+
+                del self.LSwitches[dpid]
+                switch = LSwitch(datapath)
+                self.LSwitches[dpid] = switch
+
+        else:
+            self.logger.info('%s (%s) has connected' %
+                             (dpid_to_empower(dpid), dpid))
+
+            switch = LSwitch(datapath)
+            switch.flowmod(fm_type='DEL', match={})
+            self.LSwitches[dpid] = switch
+
+
         self.agent.send_of_network_item(ev.switch)
 
     @set_ev_cls(EventLinkAdd)

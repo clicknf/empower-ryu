@@ -200,8 +200,9 @@ class IntentEndPoint(object):
     def to_jsondict(self):
         """Return JSON representation of this object."""
 
-        out = {'ports': self.ports,
-               'uuid': self.uuid}
+        out = {'uuid': self.uuid,
+               'dpid': '%s (%s)' % (dpid_to_empower(self.dpid), self.dpid),
+               'ports': self.ports}
 
         return {'IntentEndPoint': out}
 
@@ -290,21 +291,21 @@ class EmpowerAgent(websocket.WebSocketApp):
         handler = getattr(self, handler_name)
         handler(msg)
 
-    def _handle_update_endpoint(self, endpoint):
+    def _handle_update_endpoint(self, msg):
 
-        self.intent.update_endpoint(IntentEndPoint(endpoint))
+        self.intent.update_endpoint(IntentEndPoint(msg))
 
-    def _handle_remove_endpoint(self, remove_endpoint):
+    def _handle_remove_endpoint(self, msg):
 
-        self.intent.remove_endpoint(remove_endpoint['endpoint_uuid'])
+        self.intent.remove_endpoint(UUID(msg['endpoint_uuid']))
 
-    def _handle_add_rule(self, rule):
+    def _handle_add_rule(self, msg):
 
-        self.intent.add_rule(IntentRule(rule, self.intent.endpoints))
+        self.intent.add_rule(IntentRule(msg, self.intent.endpoints))
 
-    def _handle_remove_rule(self, rule_uuid):
+    def _handle_remove_rule(self, msg):
 
-        self.intent.remove_rule(rule_uuid)
+        self.intent.remove_rule(UUID(msg['rule_uuid']))
 
     def send_message(self, message_type, message):
         """Add fixed header fields and send message. """
