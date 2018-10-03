@@ -25,8 +25,8 @@ from ryu.lib.packet import ethernet
 from ryu.lib.packet import vlan
 from ryu.lib.packet import ether_types
 from ryu.topology.api import get_switch, get_link, get_host
-    #get_all_host, get_all_link, get_all_switch
 from ryu.ofproto import ofproto_v1_0
+from ryu.lib.ofctl_v1_0 import to_match, to_actions
 from collections import OrderedDict
 from ryu.app.wsgi import WSGIApplication
 from threading import Lock
@@ -41,6 +41,7 @@ from ryu.app.agent_intent import start_agent
 
 OFP_LW_PRIORITY = 100
 OFP_RULE_PRIORITY = 200
+OFP_CUSTOM_PRIORITY = 250
 OFP_TUNNEL_PRIORITY = 300
 BASE_HEX = 16
 
@@ -109,57 +110,30 @@ class LSwitch:
 
         self._dp.send_msg(out)
 
-    def flowmod(self, fm_type='ADD',
-                src=None, dst=None, in_port=None, match=None,
-                out_port=None,
-                vlan_action=None, vlan_id=None,
-                priority=OFP_LW_PRIORITY):
+    def add_ofrule(self, match, actions, priority):
 
-        if match is None:
-            match = self._ofproto_parser.OFPMatch(
-                dl_src=haddr_to_bin(src),
-                dl_dst=haddr_to_bin(dst),
-                in_port=in_port)
-        else:
-            match = self._ofproto_parser.OFPMatch(**match)
+        mod = self._ofproto_parser.OFPFlowMod(
+            datapath=self._dp,
+            match=to_match(self._dp, match),
+            cookie=0,
+            command=self._ofproto.OFPFC_ADD,
+            idle_timeout=0,
+            hard_timeout=0,
+            priority=priority,
+            flags=self._ofproto.OFPFF_SEND_FLOW_REM,
+            actions=to_actions(self._dp,actions))
 
-        if fm_type == 'ADD':
+        self._dp.send_msg(mod)
 
-            actions = [self._dp.ofproto_parser.OFPActionOutput(out_port)]
+    def remove_ofrule(self, match):
 
-            if vlan_action == 'encap':
-                actions.insert(0, self._dp.ofproto_parser.OFPActionVlanVid(
-                    vlan_id))
+        mod = self._ofproto_parser.OFPFlowMod(
+            datapath=self._dp,
+            match=to_match(self._dp, match),
+            cookie=0,
+            command=self._ofproto.OFPFC_DELETE)
 
-            if vlan_action == 'decap':
-                actions.insert(0, self._dp.ofproto_parser.OFPActionStripVlan())
-
-            mod = self._ofproto_parser.OFPFlowMod(
-                datapath=self._dp,
-                match=match,
-                cookie=0,
-                command=self._ofproto.OFPFC_ADD,
-                idle_timeout=0,
-                hard_timeout=0,
-                priority=priority,
-                flags=self._ofproto.OFPFF_SEND_FLOW_REM,
-                actions=actions)
-
-            self._dp.send_msg(mod)
-
-            return mod
-
-        if fm_type == 'DEL':
-
-            mod = self._ofproto_parser.OFPFlowMod(
-                datapath=self._dp,
-                match=match,
-                cookie=0,
-                command=self._ofproto.OFPFC_DELETE)
-
-            self._dp.send_msg(mod)
-
-            return mod
+        self._dp.send_msg(mod)
 
 
 def dijkstra(vertices, edges, source):
@@ -222,10 +196,14 @@ class Intent(app_manager.RyuApp):
         self.lvnf_info = OrderedDict()
         self.LSwitches = {}
         self.mutex = Lock()
-        self.vlan_id = 1000
-        self.vlan_dst_map = {}
+        self._vlan_id = 1000
 
         self.agent = start_agent(conf.empower_ip, conf.empower_port, 2, self)
+
+    def next_vlan_id(self):
+
+        self._vlan_id += 1
+        return self._vlan_id
 
     def get_switches(self):
 
@@ -281,23 +259,32 @@ class Intent(app_manager.RyuApp):
         ttp_endpoint_port = rule.ttp_endpoint.ports[rule.ttp_vport]
         ttp_port = ttp_endpoint_port.port_no
 
+        actions = list(rule.actions)
+
+        if rule.priority is not None:
+            priority = OFP_CUSTOM_PRIORITY + rule.priority
+        else:
+            priority = OFP_TUNNEL_PRIORITY
+
         # the rule endpoints are on the same switch
         if stp_dpid == ttp_dpid:
 
-            stp_mod = stp_switch.flowmod(match=rule.match,
-                                         out_port=ttp_port,
-                                         priority=OFP_TUNNEL_PRIORITY)
-            rule.flow_mods.append(stp_mod)
+            actions.append({'type': 'OUTPUT', 'port': ttp_port})
+
+            stp_switch.add_ofrule(rule.match,
+                                  actions,
+                                  priority)
+
             return
 
         # the rule endpoints are on different switches
         next_dpid, out_port = self._get_nexthop(stp_dpid, ttp_dpid)
+        vlan_id = self.next_vlan_id()
 
-        stp_mod = stp_switch.flowmod(match=rule.match,
-                                     out_port=out_port,
-                                     vlan_action='encap',
-                                     vlan_id=self.vlan_id,
-                                     priority=OFP_TUNNEL_PRIORITY)
+        actions.append({'type': 'SET_VLAN_VID', 'vlan_vid': vlan_id})
+        actions.append({'type': 'OUTPUT', 'port': out_port})
+
+        stp_switch.add_ofrule(rule.match, actions, priority)
 
         while next_dpid != ttp_dpid:
 
@@ -307,37 +294,29 @@ class Intent(app_manager.RyuApp):
 
             switch = self.LSwitches[next_dpid]
             next_dpid, next_port = self._get_nexthop(next_dpid, ttp_dpid)
-            switch.flowmod(match={'dl_vlan': self.vlan_id},
-                           out_port=next_port,
-                           priority=OFP_TUNNEL_PRIORITY)
+            out_action = {'type': 'OUTPUT', 'port': next_port}
+            switch.add_ofrule({'dl_vlan': self.vlan_id}, out_action, priority)
 
+        out_decap_actions = [{'type': 'STRIP_VLAN'},
+                             {'type': 'OUTPUT', 'port': ttp_port}]
         ttp_switch = self.LSwitches[ttp_dpid]
-        ttp_mod = ttp_switch.flowmod(match={'dl_vlan': self.vlan_id},
-                                     out_port=ttp_port,
-                                     vlan_action='decap',
-                                     priority=OFP_TUNNEL_PRIORITY)
+        ttp_switch.add_ofrule({'dl_vlan': self.vlan_id}, out_decap_actions, priority)
 
-        rule.flow_mods.append(stp_mod)
-        rule.flow_mods.append(ttp_mod) # only for storing the matching vlan_id
-
-        self.vlan_dst_map[self.vlan_id] = (ttp_dpid, ttp_port)
-        self.vlan_id += 1
+        rule.vlan = vlan_id
 
     def _remove_rule(self, rule):
 
         stp_dpid = rule.stp_endpoint.dpid
         stp_switch = self.LSwitches[stp_dpid]
-        stp_switch.flowmod(fm_type='DEL',
-                           match=rule.match)
+        stp_switch.remove_ofrule(rule.match)
 
         # the rule involved only one switch, no vlans have been used
-        if len(rule.flow_mods) > 1:
+        if rule.vlan:
 
-            vlan_id = rule.flow_mods[1].match['dl_vlan']
+            vlan_id = rule.vlan
 
             for sw_id in self.LSwitches:
-                self.LSwitches[sw_id].flowmod(fm_type='DEL',
-                                              match={'dl_vlan': vlan_id})
+                self.LSwitches[sw_id].remove_ofrule({'dl_vlan': vlan_id})
 
     def _remove_empower_hosts(self, endpoint):
         # delete all rules and unlearn host
@@ -490,8 +469,6 @@ class Intent(app_manager.RyuApp):
     def _packet_in_handler(self, ev):
 
         msg = ev.msg
-        datapath = msg.datapath
-        ofproto = datapath.ofproto
 
         pkt = packet.Packet(msg.data)
         eth = pkt.get_protocol(ethernet.ethernet)
@@ -520,76 +497,88 @@ class Intent(app_manager.RyuApp):
             return
 
         try:
-
             self.mutex.acquire()
-
-            switch = self.LSwitches[datapath.id]
-
-            # for both src and dst check whether these are controlled by Empower
-            empower_src_list = [endpoint for endpoint in self.endpoints.values()
-                                if src in endpoint.hwaddr_to_port]
-            assert len(empower_src_list) <= 1
-            empower_src = None
-            if len(empower_src_list) == 1:
-                empower_src = empower_src_list[0]
-
-            empower_dst_list = [endpoint for endpoint in self.endpoints.values()
-                                if dst in endpoint.hwaddr_to_port]
-            assert len(empower_dst_list) <= 1
-            empower_dst = None
-            if len(empower_dst_list) == 1:
-                empower_dst = empower_dst_list[0]
-
-            # in case both src and dst are unknown to Empower, proceed with
-            # regular learning switch
-            if empower_src is None and empower_dst is None:
-
-                # learn a mac address to avoid FLOOD next time.
-                switch.update_host(src, msg.in_port)
-
-                out_port = switch.get_host_port(dst)
-
-                if out_port is None:
-                    switch.packet_out(msg, ofproto.OFPP_FLOOD)
-                else:
-                    switch.flowmod(src=src, dst=dst, in_port=msg.in_port,
-                                   out_port=out_port)
-                    switch.packet_out(msg, out_port)
-
-            else:
-
-                # either src or dst are Empower controlled,
-                target_dpid, target_port = None, None
-
-                if empower_dst is None:
-                    target_dpid, target_port = self._find_host_dpid(dst)
-
-                if empower_dst is not None:
-                    endpoint_port = empower_dst.hwaddr_to_port[dst]
-                    target_dpid = endpoint_port.endpoint.dpid
-                    target_port = endpoint_port.port_no
-
-                if target_dpid is None:
-
-                    switch.packet_out(msg, ofproto.OFPP_FLOOD)
-                    return
-
-                _, nexthop_port = self._get_nexthop(switch.get_dp_id(),
-                                                    target_dpid)
-
-                if nexthop_port is None:
-                    nexthop_port = target_port
-
-                switch.flowmod(src=src, dst=dst, in_port=msg.in_port,
-                               out_port=nexthop_port,
-                                priority=OFP_RULE_PRIORITY)
-                switch.packet_out(msg, nexthop_port)
-
+            self._packet_in_empowerhandler(msg, src, dst)
         except Exception:
             traceback.print_exc()
             raise
         finally:
             self.mutex.release()
+
+
+    def _packet_in_empowerhandler(self, msg, src, dst):
+
+        datapath = msg.datapath
+        in_port = msg.in_port
+        ofproto = datapath.ofproto
+
+        if datapath.id not in self.LSwitches:
+            raise KeyError('Packet in received before datapath announcement')
+
+        switch = self.LSwitches[datapath.id]
+
+        # for both src and dst check whether these are controlled by Empower
+        empower_src_list = [endpoint for endpoint in self.endpoints.values()
+                            if src in endpoint.hwaddr_to_port]
+        assert len(empower_src_list) <= 1
+        empower_src = None
+        if len(empower_src_list) == 1:
+            empower_src = empower_src_list[0]
+
+        empower_dst_list = [endpoint for endpoint in self.endpoints.values()
+                            if dst in endpoint.hwaddr_to_port]
+        assert len(empower_dst_list) <= 1
+        empower_dst = None
+        if len(empower_dst_list) == 1:
+            empower_dst = empower_dst_list[0]
+
+        # in case both src and dst are unknown to Empower, proceed with
+        # regular learning switch
+        if empower_src is None and empower_dst is None:
+
+            # learn a mac address to avoid FLOOD next time.
+            switch.update_host(src, in_port)
+
+            out_port = switch.get_host_port(dst)
+
+            if out_port is None:
+                switch.packet_out(msg, ofproto.OFPP_FLOOD)
+                return
+            priority = OFP_LW_PRIORITY
+
+        else:
+
+            # either src or dst are Empower controlled,
+            target_dpid, target_port = None, None
+
+            if empower_dst is None:
+                target_dpid, target_port = self._find_host_dpid(dst)
+
+            if empower_dst is not None:
+                endpoint_port = empower_dst.hwaddr_to_port[dst]
+                target_dpid = endpoint_port.endpoint.dpid
+                target_port = endpoint_port.port_no
+
+            if target_dpid is None:
+
+                switch.packet_out(msg, ofproto.OFPP_FLOOD)
+                return
+
+            _, out_port = self._get_nexthop(switch.get_dp_id(),
+                                            target_dpid)
+
+            if out_port is None:
+                out_port = target_port
+            priority = OFP_RULE_PRIORITY
+
+        match = {'dl_src': src,
+                 'dl_dst': dst,
+                 'in_port': in_port}
+        out_action = [{'type': 'OUTPUT', 'port': out_port}]
+        switch.add_ofrule(match, out_action, priority)
+        switch.packet_out(msg, out_port)
+
+
 
     @set_ev_cls(ofp_event.EventOFPPortStatus, MAIN_DISPATCHER)
     def _port_status_handler(self, ev):
@@ -640,7 +629,7 @@ class Intent(app_manager.RyuApp):
                              (dpid_to_empower(dpid), dpid))
 
             switch = LSwitch(datapath)
-            switch.flowmod(fm_type='DEL', match={})
+            switch.remove_ofrule({})
             self.LSwitches[dpid] = switch
 
 

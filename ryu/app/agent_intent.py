@@ -143,7 +143,10 @@ class IntentRule(object):
         ovs_port = self.stp_endpoint.ports[self.stp_vport]
         self.match['in_port'] = ovs_port.port_no
 
-        self.flow_mods = []
+        self.actions = rule.get('actions', [])
+        self.priority = rule.get('priority', None)
+
+        self.vlan = None
 
     def to_jsondict(self):
         """Return JSON representation of this object."""
@@ -154,7 +157,9 @@ class IntentRule(object):
                'stp_endpoint': self.stp_endpoint,
                'stp_vport': self.stp_vport,
                'match': self.match,
-               'flow_mods': self.flow_mods}
+               'actions': self.actions,
+               'priority': self.priority,
+               'vlan': self.vlan}
 
         return {'IntentRule': out}
 
