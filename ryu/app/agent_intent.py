@@ -128,7 +128,7 @@ class IntentRule(object):
 
     def __init__(self, rule, endpoints):
 
-        self.uuid = UUID(rule['rule_uuid'])
+        self.uuid = UUID(rule['uuid'])
 
         ttp_uuid = UUID(rule['ttp_uuid'])
         self.ttp_endpoint = endpoints[ttp_uuid]
@@ -225,7 +225,6 @@ def on_open(websock):
     websock.send_hello()
 
     if websock.first_connection:
-        websock.send_cleanup()
         websock.first_connection = False
 
     websock.send_status()
@@ -302,7 +301,7 @@ class EmpowerAgent(websocket.WebSocketApp):
 
     def _handle_remove_endpoint(self, msg):
 
-        self.intent.remove_endpoint(UUID(msg['endpoint_uuid']))
+        self.intent.remove_endpoint(UUID(msg['uuid']))
 
     def _handle_add_rule(self, msg):
 
@@ -310,7 +309,7 @@ class EmpowerAgent(websocket.WebSocketApp):
 
     def _handle_remove_rule(self, msg):
 
-        self.intent.remove_rule(UUID(msg['rule_uuid']))
+        self.intent.remove_rule(UUID(msg['uuid']))
 
     def send_message(self, message_type, message):
         """Add fixed header fields and send message. """
@@ -332,12 +331,6 @@ class EmpowerAgent(websocket.WebSocketApp):
 
         hello = {}
         self.send_message(PT_HELLO, hello)
-
-    def send_cleanup(self):
-        """ Send cleanup message. """
-
-        cleanup = {}
-        self.send_message(PT_CLEANUP, cleanup)
 
     def send_status(self):
 
