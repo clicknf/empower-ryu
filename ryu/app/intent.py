@@ -121,7 +121,7 @@ class LSwitch:
             hard_timeout=0,
             priority=priority,
             flags=self._ofproto.OFPFF_SEND_FLOW_REM,
-            actions=to_actions(self._dp,actions))
+            actions=to_actions(self._dp, actions))
 
         self._dp.send_msg(mod)
 
@@ -294,13 +294,13 @@ class Intent(app_manager.RyuApp):
 
             switch = self.LSwitches[next_dpid]
             next_dpid, next_port = self._get_nexthop(next_dpid, ttp_dpid)
-            out_action = {'type': 'OUTPUT', 'port': next_port}
-            switch.add_ofrule({'dl_vlan': self.vlan_id}, out_action, priority)
+            out_action = [{'type': 'OUTPUT', 'port': next_port}]
+            switch.add_ofrule({'dl_vlan': vlan_id}, out_action, priority)
 
         out_decap_actions = [{'type': 'STRIP_VLAN'},
                              {'type': 'OUTPUT', 'port': ttp_port}]
         ttp_switch = self.LSwitches[ttp_dpid]
-        ttp_switch.add_ofrule({'dl_vlan': self.vlan_id}, out_decap_actions, priority)
+        ttp_switch.add_ofrule({'dl_vlan': vlan_id}, out_decap_actions, priority)
 
         rule.vlan = vlan_id
 
@@ -505,7 +505,6 @@ class Intent(app_manager.RyuApp):
         finally:
             self.mutex.release()
 
-
     def _packet_in_empowerhandler(self, msg, src, dst):
 
         datapath = msg.datapath
@@ -575,6 +574,7 @@ class Intent(app_manager.RyuApp):
                  'dl_dst': dst,
                  'in_port': in_port}
         out_action = [{'type': 'OUTPUT', 'port': out_port}]
+
         switch.add_ofrule(match, out_action, priority)
         switch.packet_out(msg, out_port)
 
