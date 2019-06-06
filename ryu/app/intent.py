@@ -96,7 +96,12 @@ class LSwitch:
 
         self._dp.send_msg(mod)
 
-    def packet_out(self, msg, out_port):
+    def packet_out(self, msg, port):
+
+        if msg.in_port == port:
+            out_port = ofproto_v1_0.OFPP_IN_PORT
+        else:
+            out_port = port
 
         actions = [self._dp.ofproto_parser.OFPActionOutput(out_port)]
         data = None
@@ -111,6 +116,13 @@ class LSwitch:
         self._dp.send_msg(out)
 
     def add_ofrule(self, match, actions, priority):
+
+        if 'in_port' in match:
+            for action in actions:
+                if action['type'] != 'OUTPUT':
+                    continue
+                if action['port'] == match['in_port']:
+                    action['port'] = ofproto_v1_0.OFPP_IN_PORT
 
         mod = self._ofproto_parser.OFPFlowMod(
             datapath=self._dp,
